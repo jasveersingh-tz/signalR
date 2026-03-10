@@ -1,0 +1,24 @@
+@if (isOwnLock) {
+  <div class="banner banner--owned" role="status" aria-live="polite">
+    <span class="banner__icon">🔒</span>
+    <span class="banner__text">You are editing this record.</span>
+  </div>
+} @else {
+  <div class="banner banner--blocked" role="alert" aria-live="assertive">
+    <span class="banner__icon">⚠️</span>
+    <span class="banner__text">
+      <strong>{{ lock.lockedByDisplayName }}</strong> is currently editing this record
+      (locked {{ lockedSince }}).
+    </span>
+    <div class="banner__actions">
+      <button class="btn btn--secondary" (click)="tryAcquire.emit()">
+        Try to acquire lock
+      </button>
+      @if (isAdmin) {
+        <button class="btn btn--danger" (click)="forceRelease.emit()">
+          Force unlock (admin)
+        </button>
+      }
+    </div>
+  </div>
+}

@@ -1,0 +1,99 @@
+<div class="editor-card">
+  <div class="editor-header">
+    <h2>📄 Record: {{ recordId }}</h2>
+    <div class="user-info">
+      Logged in as: <strong>{{ auth.currentUser.displayName }}</strong>
+      @if (auth.currentUser.isAdmin) {
+        <span class="badge badge--admin">Admin</span>
+      }
+    </div>
+  </div>
+
+  <!-- Lock banners -->
+  @if (isEditing) {
+    <app-lock-banner
+      [lock]="$any(lockState).lock"
+      [isOwnLock]="true"
+      [isAdmin]="auth.currentUser.isAdmin"
+      (tryAcquire)="tryAcquire()"
+      (forceRelease)="forceRelease()"
+    />
+  }
+  @if (isLockedByOther) {
+    <app-lock-banner
+      [lock]="$any(lockState).lock"
+      [isOwnLock]="false"
+      [isAdmin]="auth.currentUser.isAdmin"
+      (tryAcquire)="tryAcquire()"
+      (forceRelease)="forceRelease()"
+    />
+  }
+
+  <!-- Status message -->
+  @if (statusMessage) {
+    <p class="status-message" role="status" aria-live="polite">{{ statusMessage }}</p>
+  }
+
+  <!-- Form -->
+  <form [formGroup]="form" (ngSubmit)="save()" novalidate>
+    <div class="form-field">
+      <label for="title">Title</label>
+      <input id="title" formControlName="title" type="text" />
+    </div>
+
+    <div class="form-field">
+      <label for="description">Description</label>
+      <textarea id="description" formControlName="description" rows="4"></textarea>
+    </div>
+
+    <div class="form-field">
+      <label for="status">Status</label>
+      <select id="status" formControlName="status">
+        <option value="active">Active</option>
+        <option value="inactive">Inactive</option>
+        <option value="pending">Pending</option>
+      </select>
+    </div>
+
+    <!-- Action buttons -->
+    <div class="actions">
+      @if (isUnlocked || isLockedByOther) {
+        <button
+          type="button"
+          class="btn btn--primary"
+          [disabled]="isLockedByOther"
+          (click)="openEdit()"
+        >
+          ✏️ Edit
+        </button>
+      }
+      @if (isEditing) {
+        <button
+          type="submit"
+          class="btn btn--success"
+          [disabled]="isSaving"
+        >
+          {{ isSaving ? 'Saving…' : '💾 Save' }}
+        </button>
+        <button
+          type="button"
+          class="btn btn--secondary"
+          [disabled]="isSaving"
+          (click)="cancel()"
+        >
+          ✖ Cancel
+        </button>
+      }
+    </div>
+  </form>
+
+  <!-- Admin panel -->
+  @if (auth.currentUser.isAdmin) {
+    <details class="admin-panel">
+      <summary>🛡 Admin Panel</summary>
+      <button class="btn btn--danger" (click)="forceRelease()">
+        Force unlock record
+      </button>
+    </details>
+  }
+</div>
