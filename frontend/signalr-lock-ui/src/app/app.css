@@ -1,0 +1,37 @@
+.app-shell {
+  min-height: 100vh;
+  background: #f4f6f9;
+}
+
+.app-header {
+  background: #1565c0;
+  color: #fff;
+  padding: 0.85rem 1.5rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 1.15rem;
+  font-family: 'Segoe UI', sans-serif;
+}
+
+.header-meta {
+  font-size: 0.85rem;
+  opacity: 0.9;
+}
+
+.record-selector select {
+  margin-left: 0.25rem;
+  font-size: 0.85rem;
+  padding: 0.2rem 0.4rem;
+  border-radius: 3px;
+}
+
+.app-content {
+  padding: 1rem;
+}

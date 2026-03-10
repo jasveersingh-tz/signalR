@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="SignalRLock.Api/SignalRLock.Api.csproj" />
+  <Project Path="SignalRLock.Tests/SignalRLock.Tests.csproj" />
+</Solution>

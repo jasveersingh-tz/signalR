@@ -1,0 +1,19 @@
+# .NET build artifacts
+backend/**/bin/
+backend/**/obj/
+backend/**/*.user
+
+# Angular build artifacts
+frontend/**/dist/
+frontend/**/node_modules/
+
+# IDE
+.vs/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln.docstates
+
+# Test results
+TestResults/
