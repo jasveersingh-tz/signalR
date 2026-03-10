@@ -19,8 +19,8 @@ builder.Services.AddCors(options =>
     {
         policy
             .WithOrigins(
-                "http://localhost:4200",
-                "https://localhost:4200")
+                "http://localhost:4100",
+                "https://localhost:4100")
             .AllowAnyHeader()
             .AllowAnyMethod()
             .AllowCredentials(); // Required for SignalR WebSockets with credentials

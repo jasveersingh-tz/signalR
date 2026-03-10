@@ -2,7 +2,9 @@ import {
   Component,
   Input,
   OnInit,
+  OnChanges,
   OnDestroy,
+  SimpleChanges,
   HostListener,
 } from '@angular/core';
 import { FormBuilder, FormGroup } from '@angular/forms';
@@ -17,7 +19,7 @@ import { LockState } from '../../models/lock.model';
   templateUrl: './record-editor.html',
   styleUrl: './record-editor.css',
 })
-export class RecordEditor implements OnInit, OnDestroy {
+export class RecordEditor implements OnInit, OnChanges, OnDestroy {
   @Input() recordId = 'demo-record-1';
 
   form: FormGroup;
@@ -48,6 +50,25 @@ export class RecordEditor implements OnInit, OnDestroy {
     await this.lockService.subscribeToRecord(this.recordId);
   }
 
+  async ngOnChanges(changes: SimpleChanges): Promise<void> {
+    const change = changes['recordId'];
+    // Skip the very first value — ngOnInit handles the initial subscription
+    if (!change || change.isFirstChange()) return;
+
+    const previousId: string = change.previousValue;
+
+    // Release the lock on the previous record if we owned it
+    if (this.lockState.status === 'owned' && previousId) {
+      await this.lockService.releaseLock(previousId);
+    }
+
+    // Reset UI state for the new record
+    this.statusMessage = '';
+    this.isSaving = false;
+
+    await this.lockService.subscribeToRecord(this.recordId);
+  }
+
   ngOnDestroy(): void {
     this._sub?.unsubscribe();
     // Best-effort release on component destroy
@@ -67,6 +88,11 @@ export class RecordEditor implements OnInit, OnDestroy {
   async openEdit(): Promise<void> {
     const { userId, displayName } = this.auth.currentUser;
     await this.lockService.acquireLock(this.recordId, userId, displayName);
+    // acquireLock invokes the SignalR hub which responds via lockAcquired/lockRejected
+    // events. Those events update the BehaviorSubject synchronously, but the Angular
+    // subscription (this.lockState = state) runs in the same microtask queue.
+    // Yield one microtask so the subscription callback has run before we read lockState.
+    await Promise.resolve();
     if (this.lockState.status === 'owned') {
       this.lockService.startHeartbeat(this.recordId);
       this.statusMessage = '';

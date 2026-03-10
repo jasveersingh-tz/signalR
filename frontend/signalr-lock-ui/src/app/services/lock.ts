@@ -41,31 +41,7 @@ export class LockService implements OnDestroy {
       .configureLogging(signalR.LogLevel.Information)
       .build();
 
-    this._connection.on('lockAcquired', (recordId: string, lock: LockInfo) => {
-      if (recordId === this._currentRecordId) {
-        this._lockState$.next({ status: 'owned', lock });
-      }
-    });
-
-    this._connection.on('lockRejected', (recordId: string, lock: LockInfo) => {
-      if (recordId === this._currentRecordId) {
-        this._lockState$.next({ status: 'locked-by-other', lock });
-      }
-    });
-
-    this._connection.on('lockReleased', (recordId: string) => {
-      if (recordId === this._currentRecordId) {
-        this._lockState$.next({ status: 'unlocked' });
-      }
-    });
-
-    this._connection.on('lockHeartbeat', (_recordId: string, _lock: LockInfo) => {
-      // Heartbeat acknowledged — no state change needed.
-    });
-
-    this._connection.on('error', (message: string) => {
-      console.error('[LockService] Hub error:', message);
-    });
+    this._registerHubHandlers();
 
     this._connection.onreconnected(async () => {
       console.log('[LockService] Reconnected.');
@@ -91,8 +67,16 @@ export class LockService implements OnDestroy {
    * Call this when an edit view initialises.
    */
   async subscribeToRecord(recordId: string): Promise<void> {
+    // Stop heartbeat for any previously active record
+    this._stopHeartbeat();
+
     this._currentRecordId = recordId;
     this._lockState$.next({ status: 'unlocked' });
+
+    // Re-register hub handlers so the currentRecordId filter is up-to-date
+    if (this._connection) {
+      this._registerHubHandlers();
+    }
 
     // Bootstrap current state via REST (handles page-refresh scenario)
     try {
@@ -152,6 +136,43 @@ export class LockService implements OnDestroy {
         await this._connection.invoke('Heartbeat', recordId);
       }
     }, HEARTBEAT_INTERVAL_MS);
+  }
+
+  private _registerHubHandlers(): void {
+    if (!this._connection) return;
+
+    // Remove stale handlers before re-registering (safe on fresh connections too)
+    this._connection.off('lockAcquired');
+    this._connection.off('lockRejected');
+    this._connection.off('lockReleased');
+    this._connection.off('lockHeartbeat');
+    this._connection.off('error');
+
+    this._connection.on('lockAcquired', (recordId: string, lock: LockInfo) => {
+      if (recordId === this._currentRecordId) {
+        this._lockState$.next({ status: 'owned', lock });
+      }
+    });
+
+    this._connection.on('lockRejected', (recordId: string, lock: LockInfo) => {
+      if (recordId === this._currentRecordId) {
+        this._lockState$.next({ status: 'locked-by-other', lock });
+      }
+    });
+
+    this._connection.on('lockReleased', (recordId: string) => {
+      if (recordId === this._currentRecordId) {
+        this._lockState$.next({ status: 'unlocked' });
+      }
+    });
+
+    this._connection.on('lockHeartbeat', () => {
+      // Heartbeat acknowledged — no state change needed.
+    });
+
+    this._connection.on('error', (message: string) => {
+      console.error('[LockService] Hub error:', message);
+    });
   }
 
   private _stopHeartbeat(): void {
