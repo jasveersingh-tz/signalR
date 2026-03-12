@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.SignalR;
+using StackExchange.Redis;
 using SignalRLock.Api.Hubs;
 using SignalRLock.Api.Services;
 
@@ -7,8 +8,13 @@ var builder = WebApplication.CreateBuilder(args);
 // ── Configuration ────────────────────────────────────────────────────────────
 builder.Services.Configure<LockStoreOptions>(builder.Configuration.GetSection("LockStore"));
 
+// ── Redis Connection ─────────────────────────────────────────────────────────
+var redisConnection = builder.Configuration.GetValue<string>("Redis:Connection") ?? "localhost:6379";
+var redis = ConnectionMultiplexer.Connect(redisConnection);
+builder.Services.AddSingleton<IConnectionMultiplexer>(redis);
+
 // ── Services ─────────────────────────────────────────────────────────────────
-builder.Services.AddSingleton<ILockStore, InMemoryLockStore>();
+builder.Services.AddSingleton<ILockStore, RedisLockStore>();
 builder.Services.AddControllers();
 builder.Services.AddSignalR();
 

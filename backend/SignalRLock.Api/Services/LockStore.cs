@@ -1,6 +1,7 @@
-using System.Collections.Concurrent;
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using StackExchange.Redis;
 using SignalRLock.Api.Models;
 
 namespace SignalRLock.Api.Services;
@@ -39,14 +40,22 @@ public interface ILockStore
     IReadOnlyList<LockInfo> ReleaseAllByConnection(string connectionId);
 }
 
-public class InMemoryLockStore : ILockStore
+public class RedisLockStore : ILockStore
 {
-    private readonly ConcurrentDictionary<string, LockInfo> _locks = new(StringComparer.OrdinalIgnoreCase);
+    private readonly IConnectionMultiplexer _redis;
+    private readonly IDatabase _db;
     private readonly LockStoreOptions _options;
-    private readonly ILogger<InMemoryLockStore> _logger;
+    private readonly ILogger<RedisLockStore> _logger;
+    private const string LockKeyPrefix = "lock:";
+    private const string ConnectionLockKeyPrefix = "connection-locks:";
 
-    public InMemoryLockStore(IOptions<LockStoreOptions> options, ILogger<InMemoryLockStore> logger)
+    public RedisLockStore(
+        IConnectionMultiplexer redis,
+        IOptions<LockStoreOptions> options,
+        ILogger<RedisLockStore> logger)
     {
+        _redis = redis;
+        _db = redis.GetDatabase();
         _options = options.Value;
         _logger = logger;
     }
@@ -54,62 +63,67 @@ public class InMemoryLockStore : ILockStore
     public (bool Acquired, LockInfo? Lock) TryAcquire(
         string recordId, string userId, string displayName, string connectionId)
     {
-        var now = DateTime.UtcNow;
+        var lockKey = GetLockKey(recordId);
+        var connectionLocksKey = GetConnectionLocksKey(connectionId);
         var ttl = TimeSpan.FromMilliseconds(_options.LockTtlMs);
+        var now = DateTime.UtcNow;
 
-        while (true)
+        // Check if lock exists
+        var existingValue = _db.StringGet(lockKey);
+        
+        if (existingValue.HasValue)
         {
-            if (_locks.TryGetValue(recordId, out var existing))
+            var existingLock = JsonSerializer.Deserialize<LockInfo>(existingValue.ToString());
+            
+            // Idempotent: same owner re-acquires (rolls TTL)
+            if (existingLock?.LockedByUserId == userId)
             {
-                // Expired lock — evict and retry
-                if (existing.ExpiresAtUtc < now)
-                {
-                    if (_locks.TryRemove(recordId, out _))
-                    {
-                        _logger.LogInformation("Lock on record {RecordId} evicted (TTL expired).", recordId);
-                    }
-                    continue;
-                }
-
-                // Idempotent: same owner re-acquires (rolls TTL)
-                if (existing.LockedByUserId == userId)
-                {
-                    var refreshed = existing with { ExpiresAtUtc = now + ttl, ConnectionId = connectionId };
-                    _locks.TryUpdate(recordId, refreshed, existing);
-                    _logger.LogInformation("Lock on record {RecordId} refreshed for user {UserId}.", recordId, userId);
-                    return (true, _locks.GetValueOrDefault(recordId));
-                }
-
-                // Held by someone else
-                return (false, existing);
+                var refreshed = existingLock with 
+                { 
+                    ExpiresAtUtc = now + ttl,
+                    ConnectionId = connectionId 
+                };
+                var json = JsonSerializer.Serialize(refreshed);
+                _db.StringSet(lockKey, json, ttl);
+                _db.SetAdd(connectionLocksKey, recordId);
+                _logger.LogInformation("Lock on record {RecordId} refreshed for user {UserId}.", recordId, userId);
+                return (true, refreshed);
             }
 
-            // Not locked — try to add atomically
-            var newLock = new LockInfo
-            {
-                RecordId = recordId,
-                LockedByUserId = userId,
-                LockedByDisplayName = displayName,
-                AcquiredAtUtc = now,
-                ExpiresAtUtc = now + ttl,
-                ConnectionId = connectionId
-            };
-
-            if (_locks.TryAdd(recordId, newLock))
-            {
-                _logger.LogInformation("Lock acquired on record {RecordId} by user {UserId}.", recordId, userId);
-                return (true, newLock);
-            }
-            // Lost race — loop and re-read
+            // Held by someone else
+            return (false, existingLock);
         }
+
+        // Not locked — create new lock
+        var newLock = new LockInfo
+        {
+            RecordId = recordId,
+            LockedByUserId = userId,
+            LockedByDisplayName = displayName,
+            AcquiredAtUtc = now,
+            ExpiresAtUtc = now + ttl,
+            ConnectionId = connectionId
+        };
+
+        var lockJson = JsonSerializer.Serialize(newLock);
+        _db.StringSet(lockKey, lockJson, ttl);
+        _db.SetAdd(connectionLocksKey, recordId);
+        _logger.LogInformation("Lock acquired on record {RecordId} by user {UserId}.", recordId, userId);
+        return (true, newLock);
     }
 
     public bool TryRelease(string recordId, string connectionId)
     {
-        if (_locks.TryGetValue(recordId, out var existing) && existing.ConnectionId == connectionId)
+        var lockKey = GetLockKey(recordId);
+        var existingValue = _db.StringGet(lockKey);
+
+        if (existingValue.HasValue)
         {
-            if (_locks.TryRemove(recordId, out _))
+            var existingLock = JsonSerializer.Deserialize<LockInfo>(existingValue.ToString());
+            if (existingLock?.ConnectionId == connectionId)
             {
+                _db.KeyDelete(lockKey);
+                _db.SetRemove(GetConnectionLocksKey(connectionId), recordId);
                 _logger.LogInformation("Lock released on record {RecordId} by connection {ConnectionId}.", recordId, connectionId);
                 return true;
             }
@@ -119,63 +133,93 @@ public class InMemoryLockStore : ILockStore
 
     public LockInfo? ForceRelease(string recordId)
     {
-        if (_locks.TryRemove(recordId, out var removed))
+        var lockKey = GetLockKey(recordId);
+        var existingValue = _db.StringGet(lockKey);
+
+        if (existingValue.HasValue)
         {
+            var existingLock = JsonSerializer.Deserialize<LockInfo>(existingValue.ToString());
+            _db.KeyDelete(lockKey);
+            if (existingLock != null)
+            {
+                _db.SetRemove(GetConnectionLocksKey(existingLock.ConnectionId), recordId);
+            }
             _logger.LogInformation("Lock force-released on record {RecordId}.", recordId);
-            return removed;
+            return existingLock;
         }
         return null;
     }
 
     public bool TryHeartbeat(string recordId, string connectionId)
     {
-        if (!_locks.TryGetValue(recordId, out var existing))
-            return false;
-        if (existing.ConnectionId != connectionId)
+        var lockKey = GetLockKey(recordId);
+        var existingValue = _db.StringGet(lockKey);
+
+        if (!existingValue.HasValue)
             return false;
 
-        var refreshed = existing with
+        var existingLock = JsonSerializer.Deserialize<LockInfo>(existingValue.ToString());
+        if (existingLock?.ConnectionId != connectionId)
+            return false;
+
+        var ttl = TimeSpan.FromMilliseconds(_options.LockTtlMs);
+        var refreshed = existingLock with
         {
-            ExpiresAtUtc = DateTime.UtcNow + TimeSpan.FromMilliseconds(_options.LockTtlMs)
+            ExpiresAtUtc = DateTime.UtcNow + ttl
         };
-        _locks.TryUpdate(recordId, refreshed, existing);
+        var json = JsonSerializer.Serialize(refreshed);
+        _db.StringSet(lockKey, json, ttl, When.Exists);
         return true;
     }
 
     public LockInfo? GetLock(string recordId)
     {
-        if (_locks.TryGetValue(recordId, out var info))
+        var lockKey = GetLockKey(recordId);
+        var value = _db.StringGet(lockKey);
+
+        if (value.HasValue)
         {
-            if (info.ExpiresAtUtc < DateTime.UtcNow)
-            {
-                _locks.TryRemove(recordId, out _);
-                return null;
-            }
-            return info;
+            var lockInfo = JsonSerializer.Deserialize<LockInfo>(value.ToString());
+            return lockInfo;
         }
         return null;
     }
 
     public IReadOnlyList<string> GetRecordsLockedByConnection(string connectionId)
     {
-        return _locks.Values
-            .Where(l => l.ConnectionId == connectionId)
-            .Select(l => l.RecordId)
-            .ToList();
+        var connectionLocksKey = GetConnectionLocksKey(connectionId);
+        var recordIds = _db.SetMembers(connectionLocksKey);
+        return recordIds.Select(r => r.ToString()).ToList();
     }
 
     public IReadOnlyList<LockInfo> ReleaseAllByConnection(string connectionId)
     {
         var released = new List<LockInfo>();
-        foreach (var kv in _locks)
+        var connectionLocksKey = GetConnectionLocksKey(connectionId);
+        var recordIds = _db.SetMembers(connectionLocksKey);
+
+        foreach (var recordId in recordIds)
         {
-            if (kv.Value.ConnectionId == connectionId &&
-                _locks.TryRemove(kv.Key, out var removed))
+            var lockKey = GetLockKey(recordId.ToString());
+            var existingValue = _db.StringGet(lockKey);
+            
+            if (existingValue.HasValue)
             {
-                released.Add(removed);
-                _logger.LogInformation("Lock released on record {RecordId} due to connection {ConnectionId} disconnect.", kv.Key, connectionId);
+                var lockInfo = JsonSerializer.Deserialize<LockInfo>(existingValue.ToString());
+                if (lockInfo != null)
+                {
+                    released.Add(lockInfo);
+                    _logger.LogInformation("Lock released on record {RecordId} due to connection {ConnectionId} disconnect.", recordId, connectionId);
+                }
             }
+            _db.KeyDelete(lockKey);
         }
+
+        _db.KeyDelete(connectionLocksKey);
         return released;
     }
+
+    private string GetLockKey(string recordId) => $"{LockKeyPrefix}{recordId}";
+
+    private string GetConnectionLocksKey(string connectionId) => $"{ConnectionLockKeyPrefix}{connectionId}";
 }

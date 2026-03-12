@@ -11,6 +11,7 @@ import { LockInfo, LockState } from '../models/lock.model';
 
 const HUB_URL = '/hubs/recordLock';
 const HEARTBEAT_INTERVAL_MS = 30_000;
+const INACTIVITY_TIMEOUT_MS = 60_000; // 1 minute
 
 @Injectable({ providedIn: 'root' })
 export class LockService implements OnDestroy {
@@ -18,7 +19,9 @@ export class LockService implements OnDestroy {
   private _lockState$ = new BehaviorSubject<LockState>({ status: 'unlocked' });
   private _destroyed$ = new Subject<void>();
   private _heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private _inactivityTimer: ReturnType<typeof setTimeout> | null = null;
   private _currentRecordId: string | null = null;
+  private _lastActivityTime: number = Date.now();
 
   /** Observable of the current lock state for the active record. */
   readonly lockState$: Observable<LockState> = this._lockState$.asObservable();
@@ -67,8 +70,8 @@ export class LockService implements OnDestroy {
    * Call this when an edit view initialises.
    */
   async subscribeToRecord(recordId: string): Promise<void> {
-    // Stop heartbeat for any previously active record
     this._stopHeartbeat();
+    this._stopInactivityTimer();
 
     this._currentRecordId = recordId;
     this._lockState$.next({ status: 'unlocked' });
@@ -104,6 +107,9 @@ export class LockService implements OnDestroy {
   ): Promise<void> {
     await this.ensureConnected();
     await this._connection!.invoke('AcquireLock', recordId, userId, displayName);
+    // Start inactivity monitoring when lock acquired
+    this._setupActivityListeners();
+    this._resetInactivityTimer();
   }
 
   /** Release the lock for a record. */
@@ -115,6 +121,7 @@ export class LockService implements OnDestroy {
       return;
     }
     this._stopHeartbeat();
+    this._stopInactivityTimer();
     await this._connection.invoke('ReleaseLock', recordId);
     this._lockState$.next({ status: 'unlocked' });
   }
@@ -182,11 +189,49 @@ export class LockService implements OnDestroy {
     }
   }
 
+  private _stopInactivityTimer(): void {
+    if (this._inactivityTimer !== null) {
+      clearTimeout(this._inactivityTimer);
+      this._inactivityTimer = null;
+    }
+  }
+
   ngOnDestroy(): void {
     this._destroyed$.next();
     this._destroyed$.complete();
     this._stopHeartbeat();
+    this._stopInactivityTimer();
     this._connection?.stop();
+  }
+
+  /** Track user activity (keyboard, mouse, etc.) */
+  private _setupActivityListeners(): void {
+    const resetInactivityTimer = () => {
+      this._lastActivityTime = Date.now();
+      this._resetInactivityTimer();
+    };
+
+    document.addEventListener('keydown', resetInactivityTimer);
+    document.addEventListener('mousemove', resetInactivityTimer);
+    document.addEventListener('click', resetInactivityTimer);
+    document.addEventListener('touchstart', resetInactivityTimer);
+  }
+
+  private _resetInactivityTimer(): void {
+    if (this._inactivityTimer !== null) {
+      clearTimeout(this._inactivityTimer);
+    }
+
+    // Only set timer if we currently own the lock
+    if (this._lockState$.value.status === 'owned') {
+      this._inactivityTimer = setTimeout(async () => {
+        console.warn(
+          '[LockService] User inactive for 5 minutes. Auto-releasing lock.'
+        );
+        await this.releaseLock(this._currentRecordId!);
+        // Optionally notify user
+      }, INACTIVITY_TIMEOUT_MS);
+    }
   }
 }
 
