@@ -8,20 +8,16 @@
 ## Table of Contents
 
 1. [High-Level Architecture](#1-high-level-architecture)
-2. [Technology Stack](#2-technology-stack)
-3. [Component Overview](#3-component-overview)
-4. [Data Models](#4-data-models)
-5. [SignalR Hub Contract](#5-signalr-hub-contract)
-6. [Functional Flows](#6-functional-flows)
-   - [Application Startup](#61-application-startup)
-   - [Lock Acquisition](#62-lock-acquisition)
-   - [Active Editing (Heartbeat)](#63-active-editing-heartbeat)
-   - [Lock Release](#64-lock-release)
-   - [Multi-User Conflict](#65-multi-user-conflict)
-   - [Disconnect & Grace Period](#66-disconnect--grace-period)
-7. [Redis Data Structures](#7-redis-data-structures)
-8. [Key Design Patterns](#8-key-design-patterns)
-9. [Configuration Reference](#9-configuration-reference)
+2. [Data Models](#2-data-models)
+3. [SignalR Hub Contract](#3-signalr-hub-contract)
+4. [Functional Flows](#4-functional-flows)
+   - [Application Startup](#41-application-startup)
+   - [Lock Acquisition](#42-lock-acquisition)
+   - [Active Editing (Heartbeat)](#43-active-editing-heartbeat)
+   - [Lock Release](#44-lock-release)
+   - [Disconnect & Grace Period](#45-disconnect--grace-period)
+5. [Redis Data Structures](#5-redis-data-structures)
+6. [Key Design Patterns](#6-key-design-patterns)
 
 ---
 
@@ -60,7 +56,7 @@ graph TB
 
 ---
 
-## 4. Data Models
+## 2. Data Models
 
 ### `LockInfo` (shared between backend and frontend)
 
@@ -86,7 +82,7 @@ erDiagram
 
 ---
 
-## 5. SignalR Hub Contract
+## 3. SignalR Hub Contract
 
 ### Client → Server Invocations
 
@@ -113,9 +109,9 @@ sequenceDiagram
 
 ---
 
-## 6. Functional Flows
+## 4. Functional Flows
 
-### 6.1 Application Startup
+### 4.1 Application Startup
 
 ```mermaid
 sequenceDiagram
@@ -140,7 +136,7 @@ sequenceDiagram
 
 ---
 
-### 6.2 Lock Acquisition
+### 4.2 Lock Acquisition
 
 ```mermaid
 sequenceDiagram
@@ -185,7 +181,7 @@ sequenceDiagram
 
 ---
 
-### 6.3 Active Editing (Heartbeat)
+### 4.3 Active Editing (Heartbeat)
 
 ```mermaid
 sequenceDiagram
@@ -213,7 +209,7 @@ sequenceDiagram
 
 ---
 
-### 6.4 Lock Release
+### 4.4 Lock Release
 
 ```mermaid
 sequenceDiagram
@@ -244,7 +240,7 @@ sequenceDiagram
 
 ---
 
-### 6.5 Disconnect & Grace Period
+### 4.5 Disconnect & Grace Period
 
 ```mermaid
 sequenceDiagram
@@ -285,7 +281,7 @@ sequenceDiagram
 
 ---
 
-## 7. Redis Data Structures
+## 5. Redis Data Structures
 
 ```mermaid
 graph LR
@@ -299,7 +295,7 @@ graph LR
     ConnectionTracking -- "set of recordIds" --> C1
 ```
 
-## 8. Key Design Patterns
+## 6. Key Design Patterns
 
 ### Pattern Summary
 
