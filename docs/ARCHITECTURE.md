@@ -10,20 +10,20 @@
 1. [High-Level Architecture](#1-high-level-architecture)
 2. [Data Models](#2-data-models)
 3. [SignalR Hub Contract](#3-signalr-hub-contract)
-4. [Functional Flows](#4-functional-flows)
-   - [Application Startup](#41-application-startup)
-   - [Lock Acquisition](#42-lock-acquisition)
-   - [Active Editing (Heartbeat)](#43-active-editing-heartbeat)
-   - [Lock Release](#44-lock-release)
-   - [Disconnect & Grace Period](#45-disconnect--grace-period)
-5. [Redis Data Structures](#5-redis-data-structures)
+4. [Redis Data Structures](#4-redis-data-structures)
+5. [Functional Flows](#5-functional-flows)
+   - [Application Startup](#51-application-startup)
+   - [Lock Acquisition](#52-lock-acquisition)
+   - [Active Editing (Heartbeat)](#53-active-editing-heartbeat)
+   - [Lock Release](#54-lock-release)
+   - [Disconnect & Grace Period](#55-disconnect--grace-period)
 6. [Key Design Patterns](#6-key-design-patterns)
 
 ---
 
 ## 1. High-Level Architecture
 
-The system consists of three layers: an **Angular frontend**, an **ASP.NET Core backend** (hosting both a REST controller and a SignalR hub), and a **Redis** store that persists lock state across server instances.
+The system consists of three layers: an **Angular frontend**, an **ASP.NET Core backend** (hosting both a REST controller and a SignalR hub), and a **Redis** store that persists lock state.
 
 ```mermaid
 graph TB
@@ -109,9 +109,23 @@ sequenceDiagram
 
 ---
 
-## 4. Functional Flows
+## 4. Redis Data Structures
 
-### 4.1 Application Startup
+```mermaid
+graph LR
+    subgraph Redis
+        L1["lock:record-001\n(String, TTL=5min)\n{\n  recordId: 'record-001',\n  lockedByUserId: 'user-abc',\n  lockedByDisplayName: 'Alice',\n  acquiredAtUtc: '...',\n  expiresAtUtc: '...',\n  connectionId: 'conn-xyz'\n}"]
+
+        C1["connection-locks:conn-xyz\n(Set)\n{ 'record-001', 'record-003' }"]
+    end
+
+    LockInfo -- "serialized JSON" --> L1
+    ConnectionTracking -- "set of recordIds" --> C1
+```
+
+## 5. Functional Flows
+
+### 5.1 Application Startup
 
 ```mermaid
 sequenceDiagram
@@ -136,7 +150,7 @@ sequenceDiagram
 
 ---
 
-### 4.2 Lock Acquisition
+### 5.2 Lock Acquisition
 
 ```mermaid
 sequenceDiagram
@@ -181,7 +195,7 @@ sequenceDiagram
 
 ---
 
-### 4.3 Active Editing (Heartbeat)
+### 5.3 Active Editing (Heartbeat)
 
 ```mermaid
 sequenceDiagram
@@ -209,7 +223,7 @@ sequenceDiagram
 
 ---
 
-### 4.4 Lock Release
+### 5.4 Lock Release
 
 ```mermaid
 sequenceDiagram
@@ -240,7 +254,7 @@ sequenceDiagram
 
 ---
 
-### 4.5 Disconnect & Grace Period
+### 5.5 Disconnect & Grace Period
 
 ```mermaid
 sequenceDiagram
@@ -281,19 +295,6 @@ sequenceDiagram
 
 ---
 
-## 5. Redis Data Structures
-
-```mermaid
-graph LR
-    subgraph Redis
-        L1["lock:record-001\n(String, TTL=5min)\n{\n  recordId: 'record-001',\n  lockedByUserId: 'user-abc',\n  lockedByDisplayName: 'Alice',\n  acquiredAtUtc: '...',\n  expiresAtUtc: '...',\n  connectionId: 'conn-xyz'\n}"]
-
-        C1["connection-locks:conn-xyz\n(Set)\n{ 'record-001', 'record-003' }"]
-    end
-
-    LockInfo -- "serialized JSON" --> L1
-    ConnectionTracking -- "set of recordIds" --> C1
-```
 
 ## 6. Key Design Patterns
 
