@@ -28,7 +28,15 @@ public class RecordLockHub : Hub
         _logger = logger;
     }
 
+    private const string AllLocksGroup = "all-locks";
+
     // ─── Client → Server ──────────────────────────────────────────────────────
+
+    /// <summary>Subscribe to lock changes for all records (used by the list view).</summary>
+    public async Task SubscribeToAllLocks()
+    {
+        await Groups.AddToGroupAsync(Context.ConnectionId, AllLocksGroup);
+    }
 
     /// <summary>Acquire a lock on a record.  Broadcasts lockAcquired or sends lockRejected.</summary>
     public async Task AcquireLock(string recordId, string userId, string displayName)
@@ -48,6 +56,7 @@ public class RecordLockHub : Hub
         {
             _logger.LogInformation("AcquireLock: record={RecordId} user={UserId} conn={Conn}", recordId, userId, Context.ConnectionId);
             await Clients.Group(RecordGroup(recordId)).SendAsync("lockAcquired", recordId, lockInfo);
+            await Clients.Group(AllLocksGroup).SendAsync("lockAcquired", recordId, lockInfo);
         }
         else
         {
@@ -69,6 +78,7 @@ public class RecordLockHub : Hub
         {
             _logger.LogInformation("ReleaseLock: record={RecordId} conn={Conn}", recordId, Context.ConnectionId);
             await Clients.Group(RecordGroup(recordId)).SendAsync("lockReleased", recordId);
+            await Clients.Group(AllLocksGroup).SendAsync("lockReleased", recordId);
         }
 
         await Groups.RemoveFromGroupAsync(Context.ConnectionId, RecordGroup(recordId));
@@ -103,6 +113,7 @@ public class RecordLockHub : Hub
         {
             _logger.LogWarning("ForceRelease: record={RecordId} by admin conn={Conn}", recordId, Context.ConnectionId);
             await Clients.Group(RecordGroup(recordId)).SendAsync("lockReleased", recordId);
+            await Clients.Group(AllLocksGroup).SendAsync("lockReleased", recordId);
         }
     }
 
@@ -187,6 +198,7 @@ public class RecordLockHub : Hub
         {
             _logger.LogInformation("Broadcasting lockReleased for record {RecordId} after grace expiry.", lockInfo.RecordId);
             await ctx.Clients.Group(RecordGroup(lockInfo.RecordId)).SendAsync("lockReleased", lockInfo.RecordId);
+            await ctx.Clients.Group(AllLocksGroup).SendAsync("lockReleased", lockInfo.RecordId);
         }
     }
 

@@ -1,5 +1,6 @@
 import { Component } from '@angular/core';
 import { MockAuth } from './services/mock-auth';
+import { MOCK_RECORDS, MockRecord } from './data/mock-records';
 
 @Component({
   selector: 'app-root',
@@ -8,17 +9,12 @@ import { MockAuth } from './services/mock-auth';
   styleUrl: './app.css',
 })
 export class App {
-  records = [
-    { id: 'record-001', label: 'Invoice #001' },
-    { id: 'record-002', label: 'Invoice #002' },
-    { id: 'record-003', label: 'Customer Profile #7' },
-  ];
-
-  selectedRecordId = this.records[0].id;
+  records: MockRecord[] = MOCK_RECORDS;
+  selectedRecordId: string | null = null;
 
   constructor(public auth: MockAuth) {}
 
-  onRecordSelect(id: string): void {
-    this.selectedRecordId = id;
+  onRecordSelected(recordId: string): void {
+    this.selectedRecordId = recordId;
   }
 }

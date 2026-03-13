@@ -1,4 +1,4 @@
-import { Injectable, OnDestroy } from '@angular/core';
+import { Injectable, NgZone, OnDestroy } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import * as signalR from '@microsoft/signalr';
 import {
@@ -23,10 +23,15 @@ export class LockService implements OnDestroy {
   private _currentRecordId: string | null = null;
   private _lastActivityTime: number = Date.now();
 
+  private _allLocks$ = new BehaviorSubject<Map<string, LockInfo>>(new Map());
+
   /** Observable of the current lock state for the active record. */
   readonly lockState$: Observable<LockState> = this._lockState$.asObservable();
 
-  constructor(private http: HttpClient) {}
+  /** Observable of all active locks (recordId → LockInfo). Used by the list view. */
+  readonly allLocks$: Observable<Map<string, LockInfo>> = this._allLocks$.asObservable();
+
+  constructor(private http: HttpClient, private zone: NgZone) {}
 
   // ── Connection ──────────────────────────────────────────────────────────────
 
@@ -100,6 +105,26 @@ export class LockService implements OnDestroy {
     await this.ensureConnected();
   }
 
+  /** Subscribe to lock changes for all records. Used by the list view. */
+  async subscribeToAllLocks(): Promise<void> {
+    await this.ensureConnected();
+    await this._connection!.invoke('SubscribeToAllLocks');
+
+    try {
+      const locks = await firstValueFrom(
+        this.http.get<LockInfo[]>('/api/locks'),
+      ).catch(() => [] as LockInfo[]);
+
+      const map = new Map<string, LockInfo>();
+      for (const lock of locks) {
+        map.set(lock.recordId, lock);
+      }
+      this._allLocks$.next(map);
+    } catch {
+      // Non-critical — hub events will correct state
+    }
+  }
+
   /** Attempt to acquire the lock for the current record. */
   async acquireLock(
     recordId: string,
@@ -157,21 +182,39 @@ export class LockService implements OnDestroy {
     this._connection.off('error');
 
     this._connection.on('lockAcquired', (recordId: string, lock: LockInfo) => {
-      if (recordId === this._currentRecordId) {
-        this._lockState$.next({ status: 'owned', lock });
-      }
+      this.zone.run(() => {
+        if (recordId === this._currentRecordId) {
+          this._lockState$.next({ status: 'owned', lock });
+        }
+        // Update global locks map
+        const acquireMap = new Map(this._allLocks$.value);
+        acquireMap.set(recordId, lock);
+        this._allLocks$.next(acquireMap);
+      });
     });
 
     this._connection.on('lockRejected', (recordId: string, lock: LockInfo) => {
-      if (recordId === this._currentRecordId) {
-        this._lockState$.next({ status: 'locked-by-other', lock });
-      }
+      this.zone.run(() => {
+        if (recordId === this._currentRecordId) {
+          this._lockState$.next({ status: 'locked-by-other', lock });
+        }
+        // Update global locks map (someone else holds it)
+        const rejectMap = new Map(this._allLocks$.value);
+        rejectMap.set(recordId, lock);
+        this._allLocks$.next(rejectMap);
+      });
     });
 
     this._connection.on('lockReleased', (recordId: string) => {
-      if (recordId === this._currentRecordId) {
-        this._lockState$.next({ status: 'unlocked' });
-      }
+      this.zone.run(() => {
+        if (recordId === this._currentRecordId) {
+          this._lockState$.next({ status: 'unlocked' });
+        }
+        // Update global locks map
+        const releaseMap = new Map(this._allLocks$.value);
+        releaseMap.delete(recordId);
+        this._allLocks$.next(releaseMap);
+      });
     });
 
     this._connection.on('lockHeartbeat', () => {

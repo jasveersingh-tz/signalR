@@ -1,0 +1,43 @@
+<div class="list-container">
+  <h2 class="list-title">Records</h2>
+
+  <table class="record-table">
+    <thead>
+      <tr>
+        <th class="col-status"></th>
+        <th>Title</th>
+        <th>Customer</th>
+        <th>Status</th>
+        <th class="col-amount">Amount</th>
+      </tr>
+    </thead>
+    <tbody>
+      @for (r of records; track r.id) {
+        <tr
+          [class.selected]="selectedRecordId === r.id"
+          [class.locked-other]="isLockedByOther(r.id)"
+          [class.locked-self]="isLockedBySelf(r.id)"
+          (click)="selectRecord(r.id)"
+        >
+          <td class="col-status">
+            @if (isLockedByOther(r.id)) {
+              <span
+                class="lock-icon lock-icon--other"
+                [title]="'Being edited by ' + getLock(r.id)?.lockedByDisplayName"
+              >&#x26A0;</span>
+            }
+            @if (isLockedBySelf(r.id)) {
+              <span class="lock-icon lock-icon--self" title="You are editing this record">&#x270E;</span>
+            }
+          </td>
+          <td>{{ r.title }}</td>
+          <td>{{ r.customer }}</td>
+          <td>
+            <span class="status-badge" [class]="'status-' + r.status">{{ r.status }}</span>
+          </td>
+          <td class="col-amount">{{ r.amount | currency:'USD':'symbol':'1.0-0' }}</td>
+        </tr>
+      }
+    </tbody>
+  </table>
+</div>

@@ -6,10 +6,11 @@ import { provideHttpClient } from '@angular/common/http';
 import { AppRoutingModule } from './app-routing-module';
 import { App } from './app';
 import { RecordEditor } from './components/record-editor/record-editor';
+import { RecordList } from './components/record-list/record-list';
 import { LockBanner } from './components/lock-banner/lock-banner';
 
 @NgModule({
-  declarations: [App, RecordEditor, LockBanner],
+  declarations: [App, RecordEditor, RecordList, LockBanner],
   imports: [BrowserModule, AppRoutingModule, ReactiveFormsModule],
   providers: [provideBrowserGlobalErrorListeners(), provideHttpClient()],
   bootstrap: [App],

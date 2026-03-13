@@ -1,0 +1,108 @@
+.list-container {
+  font-family: 'Segoe UI', sans-serif;
+}
+
+.list-title {
+  margin: 0 0 1rem;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #333;
+}
+
+.record-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.record-table thead {
+  background: #1565c0;
+  color: #fff;
+}
+
+.record-table th {
+  padding: 0.6rem 0.75rem;
+  text-align: left;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.record-table td {
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.record-table tbody tr {
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.record-table tbody tr:hover {
+  background: #e3f2fd;
+}
+
+.record-table tbody tr.selected {
+  background: #bbdefb;
+  font-weight: 500;
+}
+
+.record-table tbody tr.locked-other {
+  background: #fff8e1;
+}
+
+.record-table tbody tr.locked-other:hover {
+  background: #fff3c4;
+}
+
+.record-table tbody tr.locked-self {
+  background: #e8f5e9;
+}
+
+/* Lock status column */
+.col-status {
+  width: 2rem;
+  text-align: center;
+}
+
+.lock-icon {
+  font-size: 1.1rem;
+  cursor: default;
+}
+
+.lock-icon--other {
+  color: #e65100;
+}
+
+.lock-icon--self {
+  color: #2e7d32;
+}
+
+/* Amount column */
+.col-amount {
+  text-align: right;
+}
+
+/* Status badges */
+.status-badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 10px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.status-active {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.status-pending {
+  background: #fff3e0;
+  color: #e65100;
+}
+
+.status-inactive {
+  background: #f5f5f5;
+  color: #757575;
+}

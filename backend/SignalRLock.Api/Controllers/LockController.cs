@@ -15,6 +15,10 @@ public class LockController : ControllerBase
 
     public LockController(ILockStore lockStore) => _lockStore = lockStore;
 
+    /// <summary>Returns all currently active locks.</summary>
+    [HttpGet]
+    public IActionResult GetAllLocks() => Ok(_lockStore.GetAllLocks());
+
     /// <summary>Returns the current lock for a record, or 204 if the record is not locked.</summary>
     [HttpGet("{recordId}")]
     public IActionResult GetLock(string recordId)
