@@ -48,7 +48,7 @@ export class LockService implements OnDestroy {
 
     this._connection.onreconnected(async () => {
       console.log('[LockService] Reconnected.');
-      // Re-assert lock if we had one
+      // Re-assert lock and restart heartbeat if we had one
       if (this._lockState$.value.status === 'owned') {
         const state = this._lockState$.value;
         await this._connection!.invoke(
@@ -57,6 +57,7 @@ export class LockService implements OnDestroy {
           state.lock.lockedByUserId,
           state.lock.lockedByDisplayName,
         );
+        this.startHeartbeat(state.lock.recordId);
       }
     });
 

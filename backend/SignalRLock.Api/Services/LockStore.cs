@@ -9,7 +9,7 @@ namespace SignalRLock.Api.Services;
 public class LockStoreOptions
 {
     public int LockTtlMs { get; set; } = 300_000;       // 5 minutes
-    public int GracePeriodMs { get; set; } = 20_000;    // 20 seconds
+    public int GracePeriodMs { get; set; } = 35_000;    // 35 seconds (must exceed SignalR auto-reconnect window of ~32s)
     public int HeartbeatIntervalMs { get; set; } = 30_000; // 30 seconds
 }
 
