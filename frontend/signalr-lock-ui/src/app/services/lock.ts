@@ -8,6 +8,7 @@ import {
   firstValueFrom,
 } from 'rxjs';
 import { LockInfo, LockState } from '../models/lock.model';
+import { MockAuth } from './mock-auth';
 
 const HUB_URL = '/hubs/recordLock';
 const HEARTBEAT_INTERVAL_MS = 30_000;
@@ -31,7 +32,7 @@ export class LockService implements OnDestroy {
   /** Observable of all active locks (recordId → LockInfo). Used by the list view. */
   readonly allLocks$: Observable<Map<string, LockInfo>> = this._allLocks$.asObservable();
 
-  constructor(private http: HttpClient, private zone: NgZone) {}
+  constructor(private http: HttpClient, private zone: NgZone, private auth: MockAuth) {}
 
   // ── Connection ──────────────────────────────────────────────────────────────
 
@@ -184,7 +185,12 @@ export class LockService implements OnDestroy {
     this._connection.on('lockAcquired', (recordId: string, lock: LockInfo) => {
       this.zone.run(() => {
         if (recordId === this._currentRecordId) {
-          this._lockState$.next({ status: 'owned', lock });
+          const isOwnLock = lock.lockedByUserId === this.auth.currentUser.userId;
+          this._lockState$.next(
+            isOwnLock
+              ? { status: 'owned', lock }
+              : { status: 'locked-by-other', lock },
+          );
         }
         // Update global locks map
         const acquireMap = new Map(this._allLocks$.value);

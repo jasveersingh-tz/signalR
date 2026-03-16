@@ -24,9 +24,14 @@
       [lock]="$any(lockState).lock"
       [isOwnLock]="false"
       [isAdmin]="auth.currentUser.isAdmin"
-      (tryAcquire)="tryAcquire()"
       (forceRelease)="forceRelease()"
     />
+  }
+  @if (isUnlocked) {
+    <div class="banner banner--unlocked" role="status">
+      <span>This record is available for editing.</span>
+      <button class="btn btn--primary" (click)="tryAcquire()">Edit Record</button>
+    </div>
   }
 
   <!-- Status message -->

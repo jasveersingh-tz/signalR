@@ -11,9 +11,6 @@
       (locked {{ lockedSince }}).
     </span>
     <div class="banner__actions">
-      <button class="btn btn--secondary" (click)="tryAcquire.emit()">
-        Try to acquire lock
-      </button>
       @if (isAdmin) {
         <button class="btn btn--danger" (click)="forceRelease.emit()">
           Force unlock (admin)
