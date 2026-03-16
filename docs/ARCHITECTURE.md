@@ -28,12 +28,12 @@ The system consists of three layers: an **Angular frontend**, an **ASP.NET Core 
 ```mermaid
 graph TB
     subgraph Browser["Browser (Angular 21)"]
-        AppRoot["App\n(root component)"]
-        List["RecordList\nComponent"]
-        UI["RecordEditor\nComponent"]
-        Banner["LockBanner\nComponent"]
-        LS["LockService\n(@microsoft/signalr client)"]
-        Auth["MockAuth\n(localStorage)"]
+        AppRoot["App<br/>(root component)"]
+        List["RecordList<br/>Component"]
+        UI["RecordEditor<br/>Component"]
+        Banner["LockBanner<br/>Component"]
+        LS["LockService<br/>(@microsoft/signalr client)"]
+        Auth["MockAuth<br/>(localStorage)"]
         AppRoot --> List
         AppRoot --> UI
         List --> LS
@@ -43,15 +43,15 @@ graph TB
     end
 
     subgraph Backend["Backend (ASP.NET Core 8)"]
-        REST["LockController\nGET /api/locks\nGET /api/locks/{recordId}"]
-        Hub["RecordLockHub\n/hubs/recordLock"]
+        REST["LockController<br/>GET /api/locks<br/>GET /api/locks/{recordId}"]
+        Hub["RecordLockHub<br/>/hubs/recordLock"]
         Store["ILockStore"]
         REST --> Store
         Hub --> Store
     end
 
     subgraph Storage["Storage"]
-        Redis[(Redis\nlocalhost:6379)]
+        Redis[(Redis<br/>localhost:6379)]
         Store --> Redis
     end
 
