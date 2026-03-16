@@ -49,13 +49,9 @@ public class RecordLockHub : Hub
 
         var (acquired, lockInfo) = _lockStore.TryAcquire(recordId, userId, displayName, Context.ConnectionId);
 
-        // Always join the record group so this connection receives broadcasts
-        await Groups.AddToGroupAsync(Context.ConnectionId, RecordGroup(recordId));
-
         if (acquired)
         {
             _logger.LogInformation("AcquireLock: record={RecordId} user={UserId} conn={Conn}", recordId, userId, Context.ConnectionId);
-            await Clients.Group(RecordGroup(recordId)).SendAsync("lockAcquired", recordId, lockInfo);
             await Clients.Group(AllLocksGroup).SendAsync("lockAcquired", recordId, lockInfo);
         }
         else
@@ -77,11 +73,8 @@ public class RecordLockHub : Hub
         if (released)
         {
             _logger.LogInformation("ReleaseLock: record={RecordId} conn={Conn}", recordId, Context.ConnectionId);
-            await Clients.Group(RecordGroup(recordId)).SendAsync("lockReleased", recordId);
             await Clients.Group(AllLocksGroup).SendAsync("lockReleased", recordId);
         }
-
-        await Groups.RemoveFromGroupAsync(Context.ConnectionId, RecordGroup(recordId));
     }
 
     /// <summary>Heartbeat to roll the TTL forward.</summary>
@@ -112,7 +105,6 @@ public class RecordLockHub : Hub
         if (removed != null)
         {
             _logger.LogWarning("ForceRelease: record={RecordId} by admin conn={Conn}", recordId, Context.ConnectionId);
-            await Clients.Group(RecordGroup(recordId)).SendAsync("lockReleased", recordId);
             await Clients.Group(AllLocksGroup).SendAsync("lockReleased", recordId);
         }
     }
@@ -197,12 +189,9 @@ public class RecordLockHub : Hub
         foreach (var lockInfo in released)
         {
             _logger.LogInformation("Broadcasting lockReleased for record {RecordId} after grace expiry.", lockInfo.RecordId);
-            await ctx.Clients.Group(RecordGroup(lockInfo.RecordId)).SendAsync("lockReleased", lockInfo.RecordId);
             await ctx.Clients.Group(AllLocksGroup).SendAsync("lockReleased", lockInfo.RecordId);
         }
     }
-
-    private static string RecordGroup(string recordId) => $"record-{recordId}";
 
     private record GraceEntry(CancellationTokenSource Cts, IReadOnlyList<string> LockedRecords);
 }

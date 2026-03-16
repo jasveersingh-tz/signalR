@@ -1,9 +1,11 @@
 import {
   Component,
+  EventEmitter,
   Input,
   OnInit,
   OnChanges,
   OnDestroy,
+  Output,
   SimpleChanges,
   HostListener,
 } from '@angular/core';
@@ -22,6 +24,7 @@ import { MOCK_RECORDS } from '../../data/mock-records';
 })
 export class RecordEditor implements OnInit, OnChanges, OnDestroy {
   @Input() recordId = 'demo-record-1';
+  @Output() closed = new EventEmitter<void>();
 
   form: FormGroup;
   lockState: LockState = { status: 'unlocked' };
@@ -109,15 +112,15 @@ export class RecordEditor implements OnInit, OnChanges, OnDestroy {
     this.isSaving = true;
     // Simulate async save
     await new Promise((r) => setTimeout(r, 600));
-    this.statusMessage = '✅ Record saved successfully.';
     this.isSaving = false;
     await this.lockService.releaseLock(this.recordId);
+    this.closed.emit();
   }
 
   async cancel(): Promise<void> {
     if (this.lockState.status !== 'owned') return;
     await this.lockService.releaseLock(this.recordId);
-    this.statusMessage = '';
+    this.closed.emit();
   }
 
   async tryAcquire(): Promise<void> {

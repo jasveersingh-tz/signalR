@@ -15,7 +15,7 @@
     </div>
     <div class="panel-right">
       @if (selectedRecordId) {
-        <app-record-editor [recordId]="selectedRecordId" />
+        <app-record-editor [recordId]="selectedRecordId" (closed)="selectedRecordId = null" />
       } @else {
         <div class="placeholder">Select a record from the list to edit.</div>
       }
