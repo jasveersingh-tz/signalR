@@ -147,18 +147,18 @@ sequenceDiagram
     BE-->>FE: Connection established (connectionId assigned)
     FE->>BE: invoke('SubscribeToAllLocks')  [join all-locks group]
     FE->>BE: GET /api/locks  [REST bootstrap for list view]
-    BE->>R: GET all lock:* keys
-    R-->>BE: [] or [LockInfo, ...]
-    BE-->>FE: 200 LockInfo[]
-    FE->>FE: allLocks$ populated; list renders with lock indicators
+    BE->>R: GET all lock keys
+    R-->>BE: empty or LockInfo array
+    BE-->>FE: 200 LockInfo array
+    FE->>FE: allLocks$ populated, list renders with lock indicators
     U->>FE: Clicks a record row
     FE->>FE: RecordEditor ngOnInit() for selected recordId
-    FE->>BE: GET /api/locks/{recordId}  [REST bootstrap for editor]
-    BE->>R: GET lock:{recordId}
+    FE->>BE: GET /api/locks/recordId  [REST bootstrap for editor]
+    BE->>R: GET lock for recordId
     R-->>BE: null (unlocked) or LockInfo (locked)
     BE-->>FE: 204 No Content or 200 LockInfo
-    FE->>FE: lockState$ = { status: 'unlocked' } or { status: 'locked-by-other', lock }
-    FE->>FE: RecordEditor auto-invokes openEdit() → acquireLock(...)
+    FE->>FE: lockState$ set to unlocked or locked-by-other
+    FE->>FE: RecordEditor auto-invokes openEdit() then acquireLock(...)
 ```
 
 ---
