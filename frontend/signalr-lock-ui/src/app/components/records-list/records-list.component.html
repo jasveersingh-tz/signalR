@@ -1,0 +1,50 @@
+<section class="records-card">
+  @if (loading) {
+    <p class="list-state">Loading…</p>
+  } @else if (error) {
+    <p class="list-state list-state--error" role="alert">{{ error }}</p>
+  } @else {
+    <table class="records-table">
+      <thead>
+        <tr>
+          <th>Lock</th>
+          <th>ID</th>
+          <th>Name</th>
+          <th>Status</th>
+          <th>Updated</th>
+          <th>Locked By</th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (record of records; track record.id) {
+          <tr (click)="onRowClick(record)" [class.row--pending]="pendingAcquireRecordId === record.id">
+            <td>
+              <span class="lock-icon" [class]="'lock-icon ' + lockClass(record)" [title]="lockTooltip(record)">
+                @if (record.isLocked) {
+                  <svg class="lock-icon__svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path
+                      d="M17 10h-1V7a4 4 0 0 0-8 0v3H7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7a2 2 0 0 0-2-2Zm-6 0V7a2 2 0 1 1 4 0v3h-4Z"
+                      fill="currentColor"
+                    />
+                  </svg>
+                } @else {
+                  <svg class="lock-icon__svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path
+                      d="M17 10h-6V7a2 2 0 1 1 4 0h2a4 4 0 1 0-8 0v3H7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7a2 2 0 0 0-2-2Zm0 9H7v-7h10v7Z"
+                      fill="currentColor"
+                    />
+                  </svg>
+                }
+              </span>
+            </td>
+            <td>{{ record.id }}</td>
+            <td>{{ record.name }}</td>
+            <td>{{ record.status }}</td>
+            <td>{{ record.updatedAt | date: 'y-MM-dd HH:mm' }}</td>
+            <td>{{ record.lockedByDisplayName ?? '-' }}</td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  }
+</section>

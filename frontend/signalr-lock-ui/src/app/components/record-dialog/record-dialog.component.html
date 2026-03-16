@@ -1,0 +1,53 @@
+<div
+  class="dialog-backdrop"
+  role="presentation"
+  tabindex="-1"
+  (click)="onBackdropClick($event)"
+  (keydown.escape)="cancel()"
+>
+  <section
+    class="dialog-card"
+    role="dialog"
+    aria-modal="true"
+    [attr.aria-label]="record.name"
+    tabindex="0"
+    (click)="$event.stopPropagation()"
+    (keydown)="$event.stopPropagation()"
+  >
+    <header class="dialog-header">
+      <h2>{{ record.name }}</h2>
+      <small>{{ record.id }}</small>
+    </header>
+
+    @if (showSessionTimeoutPrompt) {
+      <section class="timeout-prompt" role="alertdialog" aria-modal="true" aria-label="Session timed out">
+        <p class="timeout-prompt__title">Session timed out</p>
+        <p class="timeout-prompt__message">{{ sessionTimeoutMessage }}</p>
+        <div class="timeout-prompt__actions">
+          <button type="button" class="btn btn--primary" (click)="acknowledgeSessionTimeout()">OK</button>
+        </div>
+      </section>
+    } @else {
+      @if (releaseWarning) {
+        <p class="banner banner--warn">{{ releaseWarning }}</p>
+      }
+
+      <form [formGroup]="form" class="dialog-form">
+        <label>
+          Name
+          <input type="text" formControlName="name" />
+        </label>
+
+        <label>
+          Status
+          <input type="text" formControlName="status" />
+        </label>
+      </form>
+
+      <footer class="dialog-actions">
+        <button type="button" class="btn btn--secondary" (click)="cancel()">Cancel</button>
+        <button type="button" class="btn btn--primary" (click)="save()">Save</button>
+      </footer>
+    }
+  </section>
+</div>

@@ -1,0 +1,61 @@
+.records-card {
+  background: #fff;
+  border: 1px solid #d7deea;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.records-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.records-table th,
+.records-table td {
+  padding: 0.75rem;
+  border-bottom: 1px solid #ebeff7;
+  text-align: left;
+  font-size: 0.9rem;
+}
+
+.records-table tr {
+  cursor: pointer;
+}
+
+.records-table tr:hover {
+  background: #f7fafe;
+}
+
+.lock-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.lock-icon__svg {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+.lock--locked {
+  color: #b91c1c;
+}
+
+.lock--free {
+  color: #047857;
+}
+
+.list-state {
+  margin: 0;
+  padding: 0.9rem;
+}
+
+.list-state--error {
+  color: #b91c1c;
+}
+
+.row--pending {
+  opacity: 0.65;
+}

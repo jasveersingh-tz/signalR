@@ -3,18 +3,28 @@
     <h1>🔐 SignalR Record-Level Locking — POC</h1>
     <div class="header-meta">
       Logged in as <strong>{{ auth.currentUser.displayName }}</strong>
-      <span class="record-selector">
-        &nbsp;| Record:
-        <select (change)="onRecordSelect($any($event.target).value)">
-          @for (r of records; track r.id) {
-            <option [value]="r.id">{{ r.label }}</option>
-          }
-        </select>
-      </span>
     </div>
   </header>
 
   <main class="app-content">
-    <app-record-editor [recordId]="selectedRecordId" />
+    @if (bannerMessage) {
+      <p class="banner" role="status">{{ bannerMessage }}</p>
+    }
+
+    <app-records-list
+      [records]="records"
+      [loading]="loading"
+      [error]="error"
+      [pendingAcquireRecordId]="pendingAcquireRecordId"
+      (openRecord)="onOpenRecord($event)"
+    />
+
+    @if (selectedRecord) {
+      <app-record-dialog
+        [record]="selectedRecord"
+        [connectionLost]="connectionLost()"
+        (closed)="onDialogClosed($event)"
+      />
+    }
   </main>
 </div>

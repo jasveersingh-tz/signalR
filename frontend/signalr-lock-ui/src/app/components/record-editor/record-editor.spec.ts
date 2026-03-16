@@ -6,7 +6,7 @@ import { RecordEditor } from './record-editor';
 import { LockService } from '../../services/lock';
 import { MockAuth } from '../../services/mock-auth';
 import { LockBanner } from '../lock-banner/lock-banner';
-import { LockState } from '../../models/lock.model';
+import { LockState } from '../../models';
 
 describe('RecordEditor', () => {
   let component: RecordEditor;

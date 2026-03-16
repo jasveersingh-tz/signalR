@@ -1,5 +1,5 @@
 import { Component, Input, Output, EventEmitter } from '@angular/core';
-import { LockInfo } from '../../models/lock.model';
+import { LockInfo } from '../../models';
 
 @Component({
   selector: 'app-lock-banner',

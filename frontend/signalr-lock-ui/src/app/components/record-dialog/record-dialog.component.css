@@ -1,0 +1,104 @@
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgb(17 24 39 / 45%);
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  z-index: 50;
+}
+
+.dialog-card {
+  width: min(680px, 96vw);
+  background: #fff;
+  border-radius: 12px;
+  border: 1px solid #d8e0ef;
+  box-shadow: 0 14px 28px rgb(0 0 0 / 14%);
+  padding: 1rem;
+}
+
+.dialog-header h2 {
+  margin: 0;
+}
+
+.dialog-header small {
+  color: #64748b;
+}
+
+.dialog-form {
+  display: grid;
+  gap: 0.85rem;
+  margin: 1rem 0;
+}
+
+.dialog-form label {
+  display: grid;
+  gap: 0.25rem;
+  font-size: 0.9rem;
+}
+
+.dialog-form input {
+  padding: 0.5rem;
+  border: 1px solid #cad5e8;
+  border-radius: 6px;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.btn {
+  border: 0;
+  border-radius: 6px;
+  padding: 0.5rem 0.9rem;
+  cursor: pointer;
+}
+
+.btn--primary {
+  color: #fff;
+  background: #1d4ed8;
+}
+
+.btn--secondary {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+.banner {
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.85rem;
+}
+
+.banner--warn {
+  color: #9a3412;
+  background: #fff7ed;
+  border: 1px solid #fdba74;
+}
+
+.timeout-prompt {
+  margin-top: 1rem;
+  border: 1px solid #f59e0b;
+  background: #fffbeb;
+  border-radius: 10px;
+  padding: 1rem;
+}
+
+.timeout-prompt__title {
+  margin: 0 0 0.5rem;
+  font-weight: 700;
+  color: #92400e;
+}
+
+.timeout-prompt__message {
+  margin: 0;
+  color: #78350f;
+}
+
+.timeout-prompt__actions {
+  margin-top: 0.9rem;
+  display: flex;
+  justify-content: flex-end;
+}

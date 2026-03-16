@@ -11,7 +11,7 @@ import { FormBuilder, FormGroup } from '@angular/forms';
 import { Subscription } from 'rxjs';
 import { LockService } from '../../services/lock';
 import { MockAuth } from '../../services/mock-auth';
-import { LockState } from '../../models/lock.model';
+import { LockState } from '../../models';
 
 @Component({
   selector: 'app-record-editor',
@@ -86,14 +86,8 @@ export class RecordEditor implements OnInit, OnChanges, OnDestroy {
   }
 
   async openEdit(): Promise<void> {
-    const { userId, displayName } = this.auth.currentUser;
-    await this.lockService.acquireLock(this.recordId, userId, displayName);
-    // acquireLock invokes the SignalR hub which responds via lockAcquired/lockRejected
-    // events. Those events update the BehaviorSubject synchronously, but the Angular
-    // subscription (this.lockState = state) runs in the same microtask queue.
-    // Yield one microtask so the subscription callback has run before we read lockState.
-    await Promise.resolve();
-    if (this.lockState.status === 'owned') {
+    const result = await this.lockService.acquireLock(this.recordId);
+    if (result.acquired) {
       this.lockService.startHeartbeat(this.recordId);
       this.statusMessage = '';
     }
@@ -120,7 +114,7 @@ export class RecordEditor implements OnInit, OnChanges, OnDestroy {
   }
 
   async forceRelease(): Promise<void> {
-    await this.lockService.forceRelease(this.recordId);
+    await this.lockService.releaseLock(this.recordId);
   }
 
   private _syncFormState(): void {

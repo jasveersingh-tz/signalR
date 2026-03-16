@@ -30,6 +30,22 @@ public class RecordLockHub : Hub
 
     // ─── Client → Server ──────────────────────────────────────────────────────
 
+    /// <summary>Subscribe caller to lock events for multiple records (list screen).</summary>
+    public async Task SubscribeToRecords(string[] recordIds)
+    {
+        if (recordIds is null || recordIds.Length == 0)
+            return;
+
+        var validRecordIds = recordIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.Ordinal);
+
+        foreach (var recordId in validRecordIds)
+        {
+            await Groups.AddToGroupAsync(Context.ConnectionId, RecordGroup(recordId));
+        }
+    }
+
     /// <summary>Acquire a lock on a record.  Broadcasts lockAcquired or sends lockRejected.</summary>
     public async Task AcquireLock(string recordId, string userId, string displayName)
     {
