@@ -28,25 +28,30 @@ The system consists of three layers: an **Angular frontend**, an **ASP.NET Core 
 ```mermaid
 graph TB
     subgraph Browser["Browser (Angular 21)"]
-        UI["RecordEditor\nComponent"]
-        Banner["LockBanner\nComponent"]
-        LS["LockService\n(@microsoft/signalr client)"]
-        Auth["MockAuth\n(localStorage)"]
+        AppRoot["App<br/>(root component)"]
+        List["RecordList<br/>Component"]
+        UI["RecordEditor<br/>Component"]
+        Banner["LockBanner<br/>Component"]
+        LS["LockService<br/>(@microsoft/signalr client)"]
+        Auth["MockAuth<br/>(localStorage)"]
+        AppRoot --> List
+        AppRoot --> UI
+        List --> LS
         UI --> LS
         UI --> Banner
         LS --> Auth
     end
 
     subgraph Backend["Backend (ASP.NET Core 8)"]
-        REST["LockController\nGET /api/locks/{recordId}"]
-        Hub["RecordLockHub\n/hubs/recordLock"]
+        REST["LockController<br/>GET /api/locks<br/>GET /api/locks/{recordId}"]
+        Hub["RecordLockHub<br/>/hubs/recordLock"]
         Store["ILockStore"]
         REST --> Store
         Hub --> Store
     end
 
     subgraph Storage["Storage"]
-        Redis[(Redis\nlocalhost:6379)]
+        Redis[(Redis<br/>localhost:6379)]
         Store --> Redis
     end
 
@@ -91,6 +96,7 @@ sequenceDiagram
     participant C as Angular Client
     participant H as RecordLockHub
 
+    C->>H: invoke('SubscribeToAllLocks')
     C->>H: invoke('AcquireLock', recordId, userId, displayName)
     C->>H: invoke('ReleaseLock', recordId)
     C->>H: invoke('Heartbeat', recordId)
@@ -101,10 +107,10 @@ sequenceDiagram
 
 | Event | Recipient | Payload | Meaning |
 |-------|-----------|---------|---------|
-| `lockAcquired` | Group `record-{id}` | `(recordId, LockInfo)` | Lock acquired; all in group notified |
+| `lockAcquired` | Group `all-locks` | `(recordId, LockInfo)` | Lock acquired; all subscribers notified |
 | `lockRejected` | Caller only | `(recordId, LockInfo)` | Acquisition failed; holder info included |
-| `lockReleased` | Group `record-{id}` | `(recordId)` | Lock released; record now free |
-| `lockHeartbeat` | Caller only | — | TTL refreshed; silent acknowledgment |
+| `lockReleased` | Group `all-locks` | `(recordId)` | Lock released; record now free |
+| `lockHeartbeat` | Caller only | `(recordId, LockInfo)` | TTL refreshed; updated lock info returned |
 | `error` | Caller only | `(message)` | Operation failed |
 
 ---
@@ -136,16 +142,23 @@ sequenceDiagram
 
     U->>FE: Opens app (http://localhost:4100)
     FE->>FE: MockAuth: generate/load userId & displayName from localStorage
-    FE->>FE: RecordEditor ngOnInit()
-    FE->>BE: GET /api/locks/{recordId}  [REST bootstrap]
-    BE->>R: GET lock:{recordId}
-    R-->>BE: null (unlocked) or LockInfo (locked)
-    BE-->>FE: 204 No Content or 200 LockInfo
-    FE->>FE: lockState$ = { status: 'unlocked' } or { status: 'locked-by-other', lock }
+    FE->>FE: RecordList ngOnInit()
     FE->>BE: WebSocket connect to /hubs/recordLock
     BE-->>FE: Connection established (connectionId assigned)
-    FE->>BE: JoinGroup("record-{recordId}")
-    FE->>FE: UI renders: form DISABLED, banner shows lock status
+    FE->>BE: invoke('SubscribeToAllLocks')  [join all-locks group]
+    FE->>BE: GET /api/locks  [REST bootstrap for list view]
+    BE->>R: GET all lock keys
+    R-->>BE: empty or LockInfo array
+    BE-->>FE: 200 LockInfo array
+    FE->>FE: allLocks$ populated, list renders with lock indicators
+    U->>FE: Clicks a record row
+    FE->>FE: RecordEditor ngOnInit() for selected recordId
+    FE->>BE: GET /api/locks/recordId  [REST bootstrap for editor]
+    BE->>R: GET lock for recordId
+    R-->>BE: null (unlocked) or LockInfo (locked)
+    BE-->>FE: 204 No Content or 200 LockInfo
+    FE->>FE: lockState$ set to unlocked or locked-by-other
+    FE->>FE: RecordEditor auto-invokes openEdit() then acquireLock(...)
 ```
 
 ---
@@ -172,8 +185,7 @@ sequenceDiagram
         S->>R: SET lock:{recordId} = JSON(LockInfo), TTL=5min
         S->>R: SADD connection-locks:{connId} = recordId
         S-->>H: (true, LockInfo)
-        H->>H: AddToGroupAsync("record-{recordId}")
-        H->>FE: send lockAcquired (to group "record-{recordId}")
+        H->>FE: send lockAcquired (to group "all-locks")
         FE->>FE: lockState$ = { status: 'owned', lock }
         FE->>FE: Form ENABLED, startHeartbeat()
 
@@ -181,7 +193,7 @@ sequenceDiagram
         R-->>S: LockInfo (same userId)
         S->>R: Refresh TTL, update connectionId
         S-->>H: (true, LockInfo)
-        H->>FE: send lockAcquired (to group)
+        H->>FE: send lockAcquired (to group "all-locks")
         FE->>FE: lockState$ = { status: 'owned', lock }
 
     else Lock held by different user
@@ -214,8 +226,8 @@ sequenceDiagram
         H->>FE: send lockHeartbeat (to caller only)
     end
 
-    Note over FE: Inactivity timer: 1 minute
-    alt User inactive for > 1 minute
+    Note over FE: Inactivity timer: 5 minutes
+    alt User inactive for > 5 minutes
         FE->>FE: Auto-release lock (inactivity timeout)
         FE->>H: invoke('ReleaseLock', recordId)
     end
@@ -232,7 +244,7 @@ sequenceDiagram
     participant H as RecordLockHub
     participant S as ILockStore
     participant R as Redis
-    participant OC as Other Clients (same record)
+    participant OC as Other Clients (all-locks group)
 
     U->>FE: Clicks "Save" or "Cancel"
     FE->>H: invoke('ReleaseLock', recordId)
@@ -243,8 +255,8 @@ sequenceDiagram
     S->>R: SREM connection-locks:{connId} recordId
     S-->>H: true (released)
 
-    H->>OC: send lockReleased (broadcast to group "record-{recordId}")
-    H->>FE: lockReleased included in group broadcast
+    H->>OC: send lockReleased (broadcast to group "all-locks")
+    Note over FE,OC: Caller receives lockReleased as a member of all-locks group
 
     FE->>FE: Stop heartbeat timer
     FE->>FE: Stop inactivity timer
@@ -284,7 +296,7 @@ sequenceDiagram
         H->>S: ReleaseAllByConnection(connectionId)
         S->>R: DEL lock:{record-001}, DEL lock:{record-003}
         S->>R: DEL connection-locks:{connectionId}
-        H->>OC: send lockReleased (broadcast to each record group)
+        H->>OC: send lockReleased (broadcast to group "all-locks")
         Note over OC: Other users see records unlocked\nCan now acquire locks
         A->>H: [eventually reconnects]
         A->>H: invoke('AcquireLock', "record-001", userId, ...)
@@ -315,10 +327,10 @@ When a connection drops, locks are not immediately released. A 20-second grace p
 ### 5. Connection Tracking
 Redis maintains a set of `recordId`s for each `connectionId`. This enables efficient bulk release of all locks held by a connection during grace period expiry.
 
-### 6. Group-Based Broadcasting
-All clients subscribed to a record join a SignalR group `record-{recordId}`. A single broadcast message efficiently reaches all interested clients simultaneously.
+### 6. Single Shared Broadcast Group
+All clients join a single SignalR group `all-locks` via `SubscribeToAllLocks`. Every `lockAcquired` and `lockReleased` event is broadcast to this group, so any connected client (list view or editor) immediately sees lock changes across all records without needing per-record group subscriptions.
 
 ### 7. REST Bootstrap + WebSocket Updates
-On page load, lock state is fetched via a single REST call (`GET /api/locks/{recordId}`) before the WebSocket is established. This prevents any state gap while the WebSocket handshake is in progress.
+On page load, lock state is fetched via REST before WebSocket events begin. The list view calls `GET /api/locks` (all active locks) to populate its initial state. The editor calls `GET /api/locks/{recordId}` when a record is selected. Both calls prevent state gaps while the WebSocket handshake is in progress.
 
 ---
