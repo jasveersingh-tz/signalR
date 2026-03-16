@@ -8,26 +8,22 @@
 ## Table of Contents
 
 1. [High-Level Architecture](#1-high-level-architecture)
-2. [Technology Stack](#2-technology-stack)
-3. [Component Overview](#3-component-overview)
-4. [Data Models](#4-data-models)
-5. [SignalR Hub Contract](#5-signalr-hub-contract)
-6. [Functional Flows](#6-functional-flows)
-   - [Application Startup](#61-application-startup)
-   - [Lock Acquisition](#62-lock-acquisition)
-   - [Active Editing (Heartbeat)](#63-active-editing-heartbeat)
-   - [Lock Release](#64-lock-release)
-   - [Multi-User Conflict](#65-multi-user-conflict)
-   - [Disconnect & Grace Period](#66-disconnect--grace-period)
-7. [Redis Data Structures](#7-redis-data-structures)
-8. [Key Design Patterns](#8-key-design-patterns)
-9. [Configuration Reference](#9-configuration-reference)
+2. [Data Models](#2-data-models)
+3. [SignalR Hub Contract](#3-signalr-hub-contract)
+4. [Redis Data Structures](#4-redis-data-structures)
+5. [Functional Flows](#5-functional-flows)
+   - [Application Startup](#51-application-startup)
+   - [Lock Acquisition](#52-lock-acquisition)
+   - [Active Editing (Heartbeat)](#53-active-editing-heartbeat)
+   - [Lock Release](#54-lock-release)
+   - [Disconnect & Grace Period](#55-disconnect--grace-period)
+6. [Key Design Patterns](#6-key-design-patterns)
 
 ---
 
 ## 1. High-Level Architecture
 
-The system consists of three layers: an **Angular frontend**, an **ASP.NET Core backend** (hosting both a REST controller and a SignalR hub), and a **Redis** store that persists lock state across server instances.
+The system consists of three layers: an **Angular frontend**, an **ASP.NET Core backend** (hosting both a REST controller and a SignalR hub), and a **Redis** store that persists lock state.
 
 ```mermaid
 graph TB
@@ -58,192 +54,9 @@ graph TB
     LS -- "WebSocket (SignalR)" --> Hub
 ```
 
-**Communication Protocols:**
-
-| Channel | Protocol | Purpose |
-|---------|----------|---------|
-| `GET /api/locks/{recordId}` | HTTP/REST | Bootstrap lock state on page load |
-| `/hubs/recordLock` | WebSocket (SignalR) | Real-time lock events (acquire, release, heartbeat) |
-
 ---
 
-## 2. Technology Stack
-
-### Backend
-
-| Layer | Technology | Version |
-|-------|-----------|---------|
-| Framework | ASP.NET Core | 8.0 LTS |
-| Real-time | ASP.NET Core SignalR | Built-in |
-| Cache / Lock Store | Redis (StackExchange.Redis) | 2.11.8 |
-| Testing | xUnit | 2.5.3 |
-| Test Host | Microsoft.AspNetCore.Mvc.Testing | 8.0.0 |
-| Language | C# (nullable reference types) | Latest |
-
-### Frontend
-
-| Layer | Technology | Version |
-|-------|-----------|---------|
-| Framework | Angular | 21.2.0 |
-| SignalR Client | @microsoft/signalr | 10.0.0 |
-| Reactive | RxJS | 7.8.0 |
-| Testing | Vitest | 4.0.8 |
-| Linting | ESLint | 10.0.2 |
-| Formatting | Prettier | 3.8.1 |
-| Language | TypeScript | 5.9.2 |
-
----
-
-## 3. Component Overview
-
-### Backend Components
-
-```mermaid
-classDiagram
-    class Program {
-        +ConfigureServices()
-        +MapEndpoints()
-    }
-
-    class LockController {
-        -ILockStore _lockStore
-        +GetLock(recordId) IActionResult
-    }
-
-    class RecordLockHub {
-        -ILockStore _lockStore
-        -IHubContext~RecordLockHub~ _hubContext
-        -Dictionary~string,CTS~ _graceTimers
-        +AcquireLock(recordId, userId, displayName)
-        +ReleaseLock(recordId)
-        +Heartbeat(recordId)
-        +ForceRelease(recordId)
-        +OnConnectedAsync()
-        +OnDisconnectedAsync(exception)
-    }
-
-    class ILockStore {
-        <<interface>>
-        +TryAcquire(recordId, userId, displayName, connectionId)
-        +TryRelease(recordId, connectionId)
-        +ForceRelease(recordId)
-        +TryHeartbeat(recordId, connectionId)
-        +GetLock(recordId)
-        +GetRecordsLockedByConnection(connectionId)
-        +ReleaseAllByConnection(connectionId)
-    }
-
-    class RedisLockStore {
-        -IDatabase _db
-        -LockStoreOptions _options
-    }
-
-    class InMemoryLockStore {
-        -Dictionary _locks
-    }
-
-    class LockInfo {
-        +string RecordId
-        +string LockedByUserId
-        +string LockedByDisplayName
-        +DateTime AcquiredAtUtc
-        +DateTime ExpiresAtUtc
-        +string ConnectionId
-    }
-
-    class LockStoreOptions {
-        +int LockTtlMs
-        +int GracePeriodMs
-        +int HeartbeatIntervalMs
-    }
-
-    Program --> LockController
-    Program --> RecordLockHub
-    LockController --> ILockStore
-    RecordLockHub --> ILockStore
-    ILockStore <|.. RedisLockStore
-    ILockStore <|.. InMemoryLockStore
-    ILockStore --> LockInfo
-    RedisLockStore --> LockStoreOptions
-```
-
-### Frontend Components
-
-```mermaid
-classDiagram
-    class AppComponent {
-        +RouterOutlet
-    }
-
-    class RecordEditorComponent {
-        +string recordId
-        -LockState lockState
-        -FormGroup form
-        +ngOnInit()
-        +ngOnChanges()
-        +ngOnDestroy()
-        +openEdit()
-        +save()
-        +cancel()
-        +forceRelease()
-    }
-
-    class LockBannerComponent {
-        +LockState lockState
-        +string currentUserId
-        +EventEmitter tryAgain
-        +EventEmitter forceRelease
-        +get lockedSince() string
-    }
-
-    class LockService {
-        -HubConnection _connection
-        -BehaviorSubject _lockState$
-        -string _currentRecordId
-        -number _heartbeatTimer
-        -number _inactivityTimer
-        +Observable~LockState~ lockState$
-        +subscribeToRecord(recordId)
-        +acquireLock(recordId, userId, displayName)
-        +releaseLock(recordId)
-        +forceRelease(recordId)
-        +startHeartbeat(recordId)
-    }
-
-    class MockAuthService {
-        -CurrentUser _currentUser
-        +CurrentUser getCurrentUser()
-        +setDisplayName(name)
-        +setAdmin(isAdmin)
-    }
-
-    class LockInfo {
-        +string recordId
-        +string lockedByUserId
-        +string lockedByDisplayName
-        +string acquiredAtUtc
-        +string expiresAtUtc
-        +string connectionId
-    }
-
-    class LockState {
-        <<type union>>
-        status: unlocked
-        status: owned + LockInfo
-        status: locked-by-other + LockInfo
-    }
-
-    AppComponent --> RecordEditorComponent
-    RecordEditorComponent --> LockBannerComponent
-    RecordEditorComponent --> LockService
-    RecordEditorComponent --> MockAuthService
-    LockService --> LockState
-    LockState --> LockInfo
-```
-
----
-
-## 4. Data Models
+## 2. Data Models
 
 ### `LockInfo` (shared between backend and frontend)
 
@@ -269,7 +82,7 @@ erDiagram
 
 ---
 
-## 5. SignalR Hub Contract
+## 3. SignalR Hub Contract
 
 ### Client → Server Invocations
 
@@ -296,9 +109,23 @@ sequenceDiagram
 
 ---
 
-## 6. Functional Flows
+## 4. Redis Data Structures
 
-### 6.1 Application Startup
+```mermaid
+graph LR
+    subgraph Redis
+        L1["lock:record-001\n(String, TTL=5min)\n{\n  recordId: 'record-001',\n  lockedByUserId: 'user-abc',\n  lockedByDisplayName: 'Alice',\n  acquiredAtUtc: '...',\n  expiresAtUtc: '...',\n  connectionId: 'conn-xyz'\n}"]
+
+        C1["connection-locks:conn-xyz\n(Set)\n{ 'record-001', 'record-003' }"]
+    end
+
+    LockInfo -- "serialized JSON" --> L1
+    ConnectionTracking -- "set of recordIds" --> C1
+```
+
+## 5. Functional Flows
+
+### 5.1 Application Startup
 
 ```mermaid
 sequenceDiagram
@@ -323,7 +150,7 @@ sequenceDiagram
 
 ---
 
-### 6.2 Lock Acquisition
+### 5.2 Lock Acquisition
 
 ```mermaid
 sequenceDiagram
@@ -368,7 +195,7 @@ sequenceDiagram
 
 ---
 
-### 6.3 Active Editing (Heartbeat)
+### 5.3 Active Editing (Heartbeat)
 
 ```mermaid
 sequenceDiagram
@@ -396,7 +223,7 @@ sequenceDiagram
 
 ---
 
-### 6.4 Lock Release
+### 5.4 Lock Release
 
 ```mermaid
 sequenceDiagram
@@ -427,41 +254,7 @@ sequenceDiagram
 
 ---
 
-### 6.5 Multi-User Conflict
-
-```mermaid
-sequenceDiagram
-    participant A as User A (Lock Holder)
-    participant H as RecordLockHub (Backend)
-    participant B as User B (Competitor)
-
-    Note over A,H: User A already holds the lock
-    A->>H: [lock held] editing record-001
-
-    B->>H: invoke('AcquireLock', "record-001", userB, "User B")
-    H->>H: TryAcquire → lock exists, different user
-    H-->>B: send lockRejected (caller only)\n{ status: 'locked-by-other', lock: {holder: UserA} }
-    Note over A: No notification; A continues editing uninterrupted
-
-    B->>B: Banner: "Locked by User A — 2m ago"\nForm stays DISABLED
-
-    Note over A,H: User A finishes and saves
-    A->>H: invoke('ReleaseLock', "record-001")
-    H->>H: TryRelease → delete from Redis
-    H->>A: send lockReleased (group broadcast)
-    H->>B: send lockReleased (group broadcast)
-
-    B->>B: Banner: "Unlocked — Available for editing"
-    B->>H: invoke('AcquireLock', "record-001", userB, "User B")
-    H->>H: TryAcquire → lock free
-    H->>A: send lockAcquired (group)  "User B now editing"
-    H->>B: send lockAcquired (group)
-    B->>B: lockState$ = { status: 'owned' }\nForm ENABLED
-```
-
----
-
-### 6.6 Disconnect & Grace Period
+### 5.5 Disconnect & Grace Period
 
 ```mermaid
 sequenceDiagram
@@ -502,64 +295,10 @@ sequenceDiagram
 
 ---
 
-## 7. Redis Data Structures
 
-```mermaid
-graph LR
-    subgraph Redis
-        L1["lock:record-001\n(String, TTL=5min)\n{\n  recordId: 'record-001',\n  lockedByUserId: 'user-abc',\n  lockedByDisplayName: 'Alice',\n  acquiredAtUtc: '...',\n  expiresAtUtc: '...',\n  connectionId: 'conn-xyz'\n}"]
-
-        C1["connection-locks:conn-xyz\n(Set)\n{ 'record-001', 'record-003' }"]
-    end
-
-    LockInfo -- "serialized JSON" --> L1
-    ConnectionTracking -- "set of recordIds" --> C1
-```
-
-| Key Pattern | Type | Content | TTL |
-|-------------|------|---------|-----|
-| `lock:{recordId}` | String (JSON) | Serialized `LockInfo` | 5 minutes (configurable) |
-| `connection-locks:{connectionId}` | Set | Set of `recordId` strings held by this connection | None (cleaned up explicitly) |
-
-**Operations:**
-
-| Operation | Redis Commands |
-|-----------|---------------|
-| Acquire lock | `GET lock:{id}` → check → `SET lock:{id} JSON EX ttl` + `SADD connection-locks:{conn} {id}` |
-| Release lock | `DEL lock:{id}` + `SREM connection-locks:{conn} {id}` |
-| Heartbeat | `EXPIRE lock:{id} ttl` |
-| Release all by connection | `SMEMBERS connection-locks:{conn}` → iterate DEL + `DEL connection-locks:{conn}` |
-
----
-
-## 8. Key Design Patterns
+## 6. Key Design Patterns
 
 ### Pattern Summary
-
-```mermaid
-mindmap
-  root((SignalR Locking))
-    Atomicity
-      Single lock per record
-      Redis SET NX semantics
-      No race conditions
-    Resilience
-      Grace period on disconnect
-      CancellationToken timers
-      Auto-reconnect in client
-    Real-time Sync
-      SignalR groups per record
-      Broadcast on acquire/release
-      All clients stay in sync
-    Lock Lifecycle
-      TTL-based expiration
-      Heartbeat to refresh TTL
-      Inactivity auto-release
-    Idempotency
-      Same user re-acquire = refresh
-      Safe for reconnect flow
-      No duplicate lock errors
-```
 
 ### 1. Single Lock Per Record
 Only one user can hold a lock on any given record at a time. Redis `SET` with `NX` semantics provides atomic, race-condition-free acquisition.
@@ -583,93 +322,3 @@ All clients subscribed to a record join a SignalR group `record-{recordId}`. A s
 On page load, lock state is fetched via a single REST call (`GET /api/locks/{recordId}`) before the WebSocket is established. This prevents any state gap while the WebSocket handshake is in progress.
 
 ---
-
-## 9. Configuration Reference
-
-### Backend (`appsettings.json`)
-
-```json
-{
-  "Redis": {
-    "Connection": "localhost:6379"
-  },
-  "LockStore": {
-    "LockTtlMs": 300000,
-    "GracePeriodMs": 20000,
-    "HeartbeatIntervalMs": 30000
-  }
-}
-```
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `Redis:Connection` | `localhost:6379` | Redis connection string |
-| `LockStore:LockTtlMs` | `300000` (5 min) | How long a lock lives in Redis without a heartbeat |
-| `LockStore:GracePeriodMs` | `20000` (20 s) | Time to wait before releasing locks after a disconnect |
-| `LockStore:HeartbeatIntervalMs` | `30000` (30 s) | Hint to clients: how often to send heartbeats |
-
-### Frontend (`proxy.conf.json`)
-
-```json
-{
-  "/api": {
-    "target": "http://localhost:5000",
-    "secure": false,
-    "changeOrigin": true
-  },
-  "/hubs": {
-    "target": "http://localhost:5000",
-    "secure": false,
-    "changeOrigin": true,
-    "ws": true
-  }
-}
-```
-
-The Angular dev server (`http://localhost:4100`) proxies both REST (`/api`) and WebSocket (`/hubs`) traffic to the backend (`http://localhost:5000`).
-
-### Frontend Hardcoded Timers (`lock.ts`)
-
-| Constant | Value | Description |
-|----------|-------|-------------|
-| Heartbeat interval | 30 s | Matches `HeartbeatIntervalMs` on the server |
-| Inactivity timeout | 60 s | Auto-releases lock after 1 minute of no user activity |
-
----
-
-## Appendix: File Map
-
-```
-signalR/
-├── backend/
-│   ├── SignalRLock.Api/
-│   │   ├── Controllers/
-│   │   │   └── LockController.cs        # REST GET /api/locks/{recordId}
-│   │   ├── Hubs/
-│   │   │   └── RecordLockHub.cs         # SignalR hub — core lock protocol
-│   │   ├── Models/
-│   │   │   └── LockInfo.cs              # Shared lock data record
-│   │   ├── Services/
-│   │   │   └── LockStore.cs             # ILockStore interface + Redis implementation
-│   │   ├── Program.cs                   # DI setup, middleware, endpoint mapping
-│   │   ├── appsettings.json             # Production configuration
-│   │   └── appsettings.Development.json # Development overrides
-│   ├── SignalRLock.Tests/
-│   │   └── InMemoryLockStoreTests.cs    # Unit tests for lock store logic
-│   └── SignalRLock.slnx                 # .NET solution file
-│
-├── frontend/
-│   └── signalr-lock-ui/
-│       └── src/app/
-│           ├── models/
-│           │   └── lock.model.ts        # TypeScript: LockInfo, LockState
-│           ├── services/
-│           │   ├── lock.ts              # LockService — SignalR client + state management
-│           │   └── mock-auth.ts         # MockAuthService — localStorage identity
-│           └── components/
-│               ├── record-editor/       # Main editing component with lock lifecycle
-│               └── lock-banner/         # Lock status display component
-│
-└── docs/
-    └── ARCHITECTURE.md                  # ← This document
-```

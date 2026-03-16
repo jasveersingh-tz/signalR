@@ -12,6 +12,7 @@ import { Subscription } from 'rxjs';
 import { LockService } from '../../services/lock';
 import { MockAuth } from '../../services/mock-auth';
 import { LockState } from '../../models/lock.model';
+import { MOCK_RECORDS } from '../../data/mock-records';
 
 @Component({
   selector: 'app-record-editor',
@@ -35,8 +36,8 @@ export class RecordEditor implements OnInit, OnChanges, OnDestroy {
     public auth: MockAuth,
   ) {
     this.form = this.fb.group({
-      title: ['Sample Record Title'],
-      description: ['Edit this field to test record-level locking.'],
+      title: [''],
+      description: [''],
       status: ['active'],
     });
   }
@@ -47,7 +48,9 @@ export class RecordEditor implements OnInit, OnChanges, OnDestroy {
       this._syncFormState();
     });
 
+    this._populateFormFromMockData();
     await this.lockService.subscribeToRecord(this.recordId);
+    await this.openEdit();
   }
 
   async ngOnChanges(changes: SimpleChanges): Promise<void> {
@@ -65,8 +68,10 @@ export class RecordEditor implements OnInit, OnChanges, OnDestroy {
     // Reset UI state for the new record
     this.statusMessage = '';
     this.isSaving = false;
+    this._populateFormFromMockData();
 
     await this.lockService.subscribeToRecord(this.recordId);
+    await this.openEdit();
   }
 
   ngOnDestroy(): void {
@@ -121,6 +126,17 @@ export class RecordEditor implements OnInit, OnChanges, OnDestroy {
 
   async forceRelease(): Promise<void> {
     await this.lockService.forceRelease(this.recordId);
+  }
+
+  private _populateFormFromMockData(): void {
+    const record = MOCK_RECORDS.find(r => r.id === this.recordId);
+    if (record) {
+      this.form.patchValue({
+        title: record.title,
+        description: record.description,
+        status: record.status,
+      });
+    }
   }
 
   private _syncFormState(): void {

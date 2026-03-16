@@ -9,7 +9,7 @@ namespace SignalRLock.Api.Services;
 public class LockStoreOptions
 {
     public int LockTtlMs { get; set; } = 300_000;       // 5 minutes
-    public int GracePeriodMs { get; set; } = 20_000;    // 20 seconds
+    public int GracePeriodMs { get; set; } = 35_000;    // 35 seconds (must exceed SignalR auto-reconnect window of ~32s)
     public int HeartbeatIntervalMs { get; set; } = 30_000; // 30 seconds
 }
 
@@ -38,6 +38,9 @@ public interface ILockStore
 
     /// <summary>Release all locks held by a connection (called on disconnect after grace period).</summary>
     IReadOnlyList<LockInfo> ReleaseAllByConnection(string connectionId);
+
+    /// <summary>Return all currently active locks.</summary>
+    IReadOnlyList<LockInfo> GetAllLocks();
 }
 
 public class RedisLockStore : ILockStore
@@ -217,6 +220,26 @@ public class RedisLockStore : ILockStore
 
         _db.KeyDelete(connectionLocksKey);
         return released;
+    }
+
+    public IReadOnlyList<LockInfo> GetAllLocks()
+    {
+        var server = _redis.GetServers().First();
+        var keys = server.Keys(pattern: $"{LockKeyPrefix}*");
+        var locks = new List<LockInfo>();
+
+        foreach (var key in keys)
+        {
+            var value = _db.StringGet(key);
+            if (value.HasValue)
+            {
+                var lockInfo = JsonSerializer.Deserialize<LockInfo>(value.ToString());
+                if (lockInfo != null)
+                    locks.Add(lockInfo);
+            }
+        }
+
+        return locks;
     }
 
     private string GetLockKey(string recordId) => $"{LockKeyPrefix}{recordId}";
