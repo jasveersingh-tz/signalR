@@ -1,4 +1,4 @@
-import { Component, EventEmitter, Input, OnDestroy, OnInit, Output } from '@angular/core';
+import { ChangeDetectionStrategy, ChangeDetectorRef, Component, EventEmitter, Input, OnDestroy, OnInit, Output } from '@angular/core';
 import { Subscription } from 'rxjs';
 import { MockRecord } from '../../data/mock-records';
 import { LockInfo } from '../../models/lock.model';
@@ -10,6 +10,7 @@ import { MockAuth } from '../../services/mock-auth';
   standalone: false,
   templateUrl: './record-list.html',
   styleUrl: './record-list.css',
+  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class RecordList implements OnInit, OnDestroy {
   @Input() records: MockRecord[] = [];
@@ -22,12 +23,14 @@ export class RecordList implements OnInit, OnDestroy {
 
   constructor(
     private lockService: LockService,
+    private cdr: ChangeDetectorRef,
     public auth: MockAuth,
   ) {}
 
   async ngOnInit(): Promise<void> {
     this._sub = this.lockService.allLocks$.subscribe(locks => {
       this.allLocks = locks;
+      this.cdr.markForCheck();
     });
     await this.lockService.subscribeToAllLocks();
   }

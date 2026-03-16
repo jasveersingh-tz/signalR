@@ -11,7 +11,7 @@ import { LockInfo, LockState } from '../models/lock.model';
 
 const HUB_URL = '/hubs/recordLock';
 const HEARTBEAT_INTERVAL_MS = 30_000;
-const INACTIVITY_TIMEOUT_MS = 60_000; // 1 minute
+const INACTIVITY_TIMEOUT_MS = 300_000; // 1 minute
 
 @Injectable({ providedIn: 'root' })
 export class LockService implements OnDestroy {
