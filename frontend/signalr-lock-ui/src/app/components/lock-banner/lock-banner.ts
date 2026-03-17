@@ -3,9 +3,8 @@ import { LockInfo } from '../../models';
 
 @Component({
   selector: 'app-lock-banner',
-  standalone: false,
   templateUrl: './lock-banner.html',
-  styleUrl: './lock-banner.css',
+  styleUrls: ['./lock-banner.css'],
 })
 export class LockBanner {
   @Input() lock!: LockInfo;

@@ -15,9 +15,8 @@ import { LockState } from '../../models';
 
 @Component({
   selector: 'app-record-editor',
-  standalone: false,
   templateUrl: './record-editor.html',
-  styleUrl: './record-editor.css',
+  styleUrls: ['./record-editor.css'],
 })
 export class RecordEditor implements OnInit, OnChanges, OnDestroy {
   @Input() recordId = 'demo-record-1';

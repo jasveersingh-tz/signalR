@@ -3,36 +3,30 @@
     <h2>📄 Record: {{ recordId }}</h2>
     <div class="user-info">
       Logged in as: <strong>{{ auth.currentUser.displayName }}</strong>
-      @if (auth.currentUser.isAdmin) {
-        <span class="badge badge--admin">Admin</span>
-      }
+      <span *ngIf="auth.currentUser.isAdmin" class="badge badge--admin">Admin</span>
     </div>
   </div>
 
   <!-- Lock banners -->
-  @if (isEditing) {
-    <app-lock-banner
-      [lock]="$any(lockState).lock"
-      [isOwnLock]="true"
-      [isAdmin]="auth.currentUser.isAdmin"
-      (tryAcquire)="tryAcquire()"
-      (forceRelease)="forceRelease()"
-    />
-  }
-  @if (isLockedByOther) {
-    <app-lock-banner
-      [lock]="$any(lockState).lock"
-      [isOwnLock]="false"
-      [isAdmin]="auth.currentUser.isAdmin"
-      (tryAcquire)="tryAcquire()"
-      (forceRelease)="forceRelease()"
-    />
-  }
+  <app-lock-banner
+    *ngIf="isEditing"
+    [lock]="$any(lockState).lock"
+    [isOwnLock]="true"
+    [isAdmin]="auth.currentUser.isAdmin"
+    (tryAcquire)="tryAcquire()"
+    (forceRelease)="forceRelease()"
+  ></app-lock-banner>
+  <app-lock-banner
+    *ngIf="isLockedByOther"
+    [lock]="$any(lockState).lock"
+    [isOwnLock]="false"
+    [isAdmin]="auth.currentUser.isAdmin"
+    (tryAcquire)="tryAcquire()"
+    (forceRelease)="forceRelease()"
+  ></app-lock-banner>
 
   <!-- Status message -->
-  @if (statusMessage) {
-    <p class="status-message" role="status" aria-live="polite">{{ statusMessage }}</p>
-  }
+  <p *ngIf="statusMessage" class="status-message" role="status" aria-live="polite">{{ statusMessage }}</p>
 
   <!-- Form -->
   <form [formGroup]="form" (ngSubmit)="save()" novalidate>
@@ -57,43 +51,40 @@
 
     <!-- Action buttons -->
     <div class="actions">
-      @if (isUnlocked || isLockedByOther) {
-        <button
-          type="button"
-          class="btn btn--primary"
-          [disabled]="isLockedByOther"
-          (click)="openEdit()"
-        >
-          ✏️ Edit
-        </button>
-      }
-      @if (isEditing) {
-        <button
-          type="submit"
-          class="btn btn--success"
-          [disabled]="isSaving"
-        >
-          {{ isSaving ? 'Saving…' : '💾 Save' }}
-        </button>
-        <button
-          type="button"
-          class="btn btn--secondary"
-          [disabled]="isSaving"
-          (click)="cancel()"
-        >
-          ✖ Cancel
-        </button>
-      }
+      <button
+        *ngIf="isUnlocked || isLockedByOther"
+        type="button"
+        class="btn btn--primary"
+        [disabled]="isLockedByOther"
+        (click)="openEdit()"
+      >
+        ✏️ Edit
+      </button>
+      <button
+        *ngIf="isEditing"
+        type="submit"
+        class="btn btn--success"
+        [disabled]="isSaving"
+      >
+        {{ isSaving ? 'Saving…' : '💾 Save' }}
+      </button>
+      <button
+        *ngIf="isEditing"
+        type="button"
+        class="btn btn--secondary"
+        [disabled]="isSaving"
+        (click)="cancel()"
+      >
+        ✖ Cancel
+      </button>
     </div>
   </form>
 
   <!-- Admin panel -->
-  @if (auth.currentUser.isAdmin) {
-    <details class="admin-panel">
-      <summary>🛡 Admin Panel</summary>
-      <button class="btn btn--danger" (click)="forceRelease()">
-        Force unlock record
-      </button>
-    </details>
-  }
+  <details *ngIf="auth.currentUser.isAdmin" class="admin-panel">
+    <summary>🛡 Admin Panel</summary>
+    <button class="btn btn--danger" (click)="forceRelease()">
+      Force unlock record
+    </button>
+  </details>
 </div>

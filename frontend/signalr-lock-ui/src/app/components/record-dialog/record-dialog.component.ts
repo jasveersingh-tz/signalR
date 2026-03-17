@@ -14,10 +14,8 @@
  * code paths converge (e.g. ESC fires while navigation is also in progress).
  */
 
-import { CommonModule } from '@angular/common';
 import {
   Component,
-  DestroyRef,
   EventEmitter,
   HostListener,
   Input,
@@ -26,12 +24,11 @@ import {
   OnInit,
   Output,
   SimpleChanges,
-  inject,
 } from '@angular/core';
-import { FormBuilder, ReactiveFormsModule } from '@angular/forms';
+import { FormBuilder } from '@angular/forms';
 import { Router, NavigationStart } from '@angular/router';
-import { filter } from 'rxjs';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { Subject } from 'rxjs';
+import { filter, takeUntil } from 'rxjs/operators';
 import { LockState, RecordListItem } from '../../models';
 import { LockService } from '../../services/lock';
 import { RecordsService } from '../../services/records.service';
@@ -52,19 +49,17 @@ const SESSION_TIMEOUT_MESSAGES = {
 
 @Component({
   selector: 'app-record-dialog',
-  standalone: true,
-  imports: [CommonModule, ReactiveFormsModule],
   templateUrl: './record-dialog.component.html',
-  styleUrl: './record-dialog.component.css',
+  styleUrls: ['./record-dialog.component.css'],
 })
 export class RecordDialogComponent implements OnInit, OnChanges, OnDestroy {
-  @Input({ required: true }) record!: RecordListItem;
+  @Input() record!: RecordListItem;
   /** Passed from LockService.connectionLost$ — shows a reconnect warning in the modal. */
   @Input() connectionLost = false;
 
   @Output() closed = new EventEmitter<RecordDialogCloseEvent>();
 
-  private readonly _destroyRef = inject(DestroyRef);
+  private readonly _destroy$ = new Subject<void>();
   /** Set to true as soon as a close path begins, preventing duplicate releases. */
   private _closing = false;
   /** Turns true once we have seen `owned`, so we can detect an owned → lost transition. */
@@ -94,14 +89,14 @@ export class RecordDialogComponent implements OnInit, OnChanges, OnDestroy {
     // Watch lock state transitions while modal is open.
     // If we lose ownership (unlocked or locked-by-other), show timeout prompt.
     this._lockService.lockState$
-      .pipe(takeUntilDestroyed(this._destroyRef))
+      .pipe(takeUntil(this._destroy$))
       .subscribe((state) => this._onLockStateChanged(state));
 
     // Release the lock automatically if the user navigates away
     this._router.events
       .pipe(
         filter((event) => event instanceof NavigationStart),
-        takeUntilDestroyed(this._destroyRef),
+        takeUntil(this._destroy$),
       )
       .subscribe(() => void this.cancel());
   }
@@ -114,6 +109,9 @@ export class RecordDialogComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this._destroy$.next();
+    this._destroy$.complete();
+
     // Safety net: release if the component is destroyed without going through a close path
     if (!this._closing) void this._lockService.releaseLockWithRetry(this.record.id);
   }

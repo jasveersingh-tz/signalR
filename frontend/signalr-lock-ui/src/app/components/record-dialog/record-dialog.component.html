@@ -19,18 +19,16 @@
       <small>{{ record.id }}</small>
     </header>
 
-    @if (showSessionTimeoutPrompt) {
-      <section class="timeout-prompt" role="alertdialog" aria-modal="true" aria-label="Session timed out">
-        <p class="timeout-prompt__title">Session timed out</p>
-        <p class="timeout-prompt__message">{{ sessionTimeoutMessage }}</p>
-        <div class="timeout-prompt__actions">
-          <button type="button" class="btn btn--primary" (click)="acknowledgeSessionTimeout()">OK</button>
-        </div>
-      </section>
-    } @else {
-      @if (releaseWarning) {
-        <p class="banner banner--warn">{{ releaseWarning }}</p>
-      }
+    <section *ngIf="showSessionTimeoutPrompt" class="timeout-prompt" role="alertdialog" aria-modal="true" aria-label="Session timed out">
+      <p class="timeout-prompt__title">Session timed out</p>
+      <p class="timeout-prompt__message">{{ sessionTimeoutMessage }}</p>
+      <div class="timeout-prompt__actions">
+        <button type="button" class="btn btn--primary" (click)="acknowledgeSessionTimeout()">OK</button>
+      </div>
+    </section>
+
+    <ng-container *ngIf="!showSessionTimeoutPrompt">
+      <p *ngIf="releaseWarning" class="banner banner--warn">{{ releaseWarning }}</p>
 
       <form [formGroup]="form" class="dialog-form">
         <label>
@@ -48,6 +46,6 @@
         <button type="button" class="btn btn--secondary" (click)="cancel()">Cancel</button>
         <button type="button" class="btn btn--primary" (click)="save()">Save</button>
       </footer>
-    }
+    </ng-container>
   </section>
 </div>

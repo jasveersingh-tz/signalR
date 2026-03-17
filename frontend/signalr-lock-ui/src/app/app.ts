@@ -25,8 +25,9 @@
  *   clears `selectedRecord` and shows a banner if the release failed.
  */
 
-import { Component, OnInit, effect } from '@angular/core';
-import { toSignal } from '@angular/core/rxjs-interop';
+import { Component, OnDestroy, OnInit } from '@angular/core';
+import { Subject } from 'rxjs';
+import { takeUntil } from 'rxjs/operators';
 import { MockAuth } from './services/mock-auth';
 import { LockService } from './services/lock';
 import { RecordDialogCloseEvent } from './components/record-dialog/record-dialog.component';
@@ -38,10 +39,9 @@ const BANNER_DURATION_MS = 3000;
 @Component({
   selector: 'app-root',
   templateUrl: './app.html',
-  standalone: false,
-  styleUrl: './app.css',
+  styleUrls: ['./app.css'],
 })
-export class App implements OnInit {
+export class App implements OnInit, OnDestroy {
   /** The record whose dialog is currently open (null = no dialog). */
   selectedRecord: RecordListItem | null = null;
   /** The record ID currently being acquired; disables double-click on that row. */
@@ -50,34 +50,45 @@ export class App implements OnInit {
   bannerMessage = '';
 
   private _bannerTimeout: ReturnType<typeof setTimeout> | null = null;
+  private readonly _destroy$ = new Subject<void>();
 
   /** Reflects SignalR reconnect status — passed down to the dialog for the warning banner. */
-  readonly connectionLost;
+  connectionLost = false;
 
-  // Convenience getters so the template can read service signals directly
-  get records(): RecordListItem[] { return this.recordsService.records(); }
-  get loading(): boolean           { return this.recordsService.loading(); }
-  get error(): string | null       { return this.recordsService.error(); }
+  get records(): RecordListItem[] { return this.recordsService.records; }
+  get loading(): boolean           { return this.recordsService.loading; }
+  get error(): string | null       { return this.recordsService.error; }
 
   constructor(
     public readonly auth: MockAuth,
     private readonly lockService: LockService,
     private readonly recordsService: RecordsService,
-  ) {
-    // Convert the RxJS observable to a signal so Angular's template can read it
-    this.connectionLost = toSignal(this.lockService.connectionLost$, { initialValue: false });
-
-    // Whenever the records list loads (or changes), subscribe to hub groups for
-    // all visible record IDs so live lock-icon updates arrive in real time.
-    effect(() => {
-      const ids = this.records.map((r) => r.id);
-      if (ids.length > 0) void this.lockService.subscribeToRecords(ids);
-    });
-  }
+  ) {}
 
   ngOnInit(): void {
+    this.lockService.connectionLost$
+      .pipe(takeUntil(this._destroy$))
+      .subscribe((lost) => {
+        this.connectionLost = lost;
+      });
+
+    this.recordsService.records$
+      .pipe(takeUntil(this._destroy$))
+      .subscribe((items) => {
+        const ids = items.map((r) => r.id);
+        if (ids.length > 0) {
+          void this.lockService.subscribeToRecords(ids);
+        }
+      });
+
     // Kick off the initial data load as soon as the component is ready
     void this.recordsService.refresh(10);
+  }
+
+  ngOnDestroy(): void {
+    this._destroy$.next();
+    this._destroy$.complete();
+    this._clearBanner();
   }
 
   /**

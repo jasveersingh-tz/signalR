@@ -19,11 +19,8 @@ import {
   BehaviorSubject,
   Observable,
   Subject,
-  debounceTime,
-  filter,
-  firstValueFrom,
-  timeout,
 } from 'rxjs';
+import { debounceTime, filter, first, timeout } from 'rxjs/operators';
 import { LockInfo, LockState } from '../models';
 import { MockAuth } from './mock-auth';
 import { RecordsService } from './records.service';
@@ -138,9 +135,10 @@ export class LockService implements OnDestroy {
     this._lockState$.next({ status: 'unlocked' });
 
     // Pre-populate lock state from REST so the UI doesn't flicker on first render
-    const existing = await firstValueFrom(
-      this.http.get<LockInfo | null>(`/api/locks/${recordId}`),
-    ).catch(() => null);
+    const existing = await this.http
+      .get<LockInfo | null>(`/api/locks/${recordId}`)
+      .toPromise()
+      .catch(() => null);
 
     if (existing) {
       const status = existing.lockedByUserId === this.auth.currentUser.userId
@@ -185,18 +183,24 @@ export class LockService implements OnDestroy {
     await this._connection!.invoke('AcquireLock', recordId, userId, displayName);
 
     // Wait for `lockAcquired` or `lockRejected` hub events (handled in _registerHubHandlers)
-    const decision = await firstValueFrom(
-      this._lockState$.pipe(filter((s) => s.status !== 'unlocked'), timeout(ACQUIRE_TIMEOUT_MS)),
-    ).catch(() => ({ status: 'unlocked' } as LockState));
+    const decision = (await this._lockState$
+      .pipe(
+        filter((s) => s.status !== 'unlocked'),
+        timeout(ACQUIRE_TIMEOUT_MS),
+        first(),
+      )
+      .toPromise()
+      .catch(() => ({ status: 'unlocked' } as LockState))) || ({ status: 'unlocked' } as LockState);
 
     if (decision.status === 'owned') {
+      const lock = decision.lock;
       // Optimistically update the list row so the lock icon turns red immediately
       this.recordsService.patchLock(recordId, {
         isLocked: true,
-        lockedByDisplayName: decision.lock.lockedByDisplayName,
-        lockedAtUtc: decision.lock.acquiredAtUtc,
+        lockedByDisplayName: lock.lockedByDisplayName,
+        lockedAtUtc: lock.acquiredAtUtc,
       });
-      return { acquired: true, lock: decision.lock };
+      return { acquired: true, lock };
     }
 
     if (decision.status === 'locked-by-other') {

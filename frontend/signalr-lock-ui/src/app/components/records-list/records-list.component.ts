@@ -16,25 +16,26 @@
  *  - Green SVG lock (lock--free)   → available to edit.
  */
 
-import { CommonModule } from '@angular/common';
 import { Component, EventEmitter, Input, Output } from '@angular/core';
 import { RecordListItem } from '../../models';
 
 @Component({
   selector: 'app-records-list',
-  standalone: true,
-  imports: [CommonModule],
   templateUrl: './records-list.component.html',
-  styleUrl: './records-list.component.css',
+  styleUrls: ['./records-list.component.css'],
 })
 export class RecordsListComponent {
-  @Input({ required: true }) records: RecordListItem[] = [];
+  @Input() records: RecordListItem[] = [];
   @Input() loading = false;
   @Input() error: string | null = null;
   /** ID of the record currently being acquired; that row will be visually dimmed. */
   @Input() pendingAcquireRecordId: string | null = null;
 
   @Output() openRecord = new EventEmitter<RecordListItem>();
+
+  trackByRecordId(_: number, record: RecordListItem): string {
+    return record.id;
+  }
 
   /** Emit the clicked record unless an acquire for that row is already in flight. */
   onRowClick(record: RecordListItem): void {

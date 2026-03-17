@@ -1,8 +1,9 @@
-import { NgModule, provideBrowserGlobalErrorListeners } from '@angular/core';
+import { NgModule } from '@angular/core';
 import { BrowserModule } from '@angular/platform-browser';
+import { CommonModule } from '@angular/common';
+import { HttpClientModule } from '@angular/common/http';
 import { ReactiveFormsModule } from '@angular/forms';
 import { RouterModule } from '@angular/router';
-import { provideHttpClient } from '@angular/common/http';
 
 import { App } from './app';
 import { RecordEditor } from './components/record-editor/record-editor';
@@ -13,21 +14,19 @@ import { RecordDialogComponent } from './components/record-dialog/record-dialog.
 /**
  * Root NgModule.
  *
- * Declarations  – legacy (non-standalone) components: App shell, RecordEditor, LockBanner.
- * Imports       – RecordsListComponent and RecordDialogComponent are standalone and imported here
- *                 so the App shell template can use them without any extra wiring.
+ * Declarations  – all components: App shell, RecordEditor, LockBanner, and list/dialog components.
+ * Imports       – CommonModule enables structural directives (*ngIf, *ngFor, etc.)
  * RouterModule  – inlined with an empty route table (no separate routing file needed for this POC).
  */
 @NgModule({
-  declarations: [App, RecordEditor, LockBanner],
+  declarations: [App, RecordEditor, LockBanner, RecordsListComponent, RecordDialogComponent],
   imports: [
     BrowserModule,
+    CommonModule,
     RouterModule.forRoot([]),   // empty routes – extend here when adding pages
+    HttpClientModule,
     ReactiveFormsModule,
-    RecordsListComponent,
-    RecordDialogComponent,
   ],
-  providers: [provideBrowserGlobalErrorListeners(), provideHttpClient()],
   bootstrap: [App],
 })
 export class AppModule {}

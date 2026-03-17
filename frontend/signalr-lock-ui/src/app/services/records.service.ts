@@ -12,25 +12,30 @@
  *  - `updateRecord()`  – applies local field edits after a successful dialog save.
  */
 
-import { Injectable, computed, signal } from '@angular/core';
+import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { firstValueFrom } from 'rxjs';
+import { BehaviorSubject } from 'rxjs';
 import { RecordListItem } from '../models';
 
 @Injectable({ providedIn: 'root' })
 export class RecordsService {
-  // ── Private signals (writable) ────────────────────────────────────
-  private readonly _records = signal<RecordListItem[]>([]);
-  private readonly _loading = signal(false);
-  private readonly _error   = signal<string | null>(null);
+  private readonly _records$ = new BehaviorSubject<RecordListItem[]>([]);
+  private readonly _loading$ = new BehaviorSubject<boolean>(false);
+  private readonly _error$ = new BehaviorSubject<string | null>(null);
 
-  // ── Public read-only projections ──────────────────────────────────
-  /** Current list of records. Reactive — components auto-update on change. */
-  readonly records = computed(() => this._records());
-  /** True while a refresh HTTP request is in flight. */
-  readonly loading = computed(() => this._loading());
-  /** Non-null when the last refresh failed; contains a user-friendly message. */
-  readonly error   = computed(() => this._error());
+  readonly records$ = this._records$.asObservable();
+
+  get records(): RecordListItem[] {
+    return this._records$.value;
+  }
+
+  get loading(): boolean {
+    return this._loading$.value;
+  }
+
+  get error(): string | null {
+    return this._error$.value;
+  }
 
   constructor(private readonly http: HttpClient) {}
 
@@ -39,17 +44,15 @@ export class RecordsService {
    * Updates loading / error signals around the request.
    */
   async refresh(limit = 10): Promise<void> {
-    this._loading.set(true);
-    this._error.set(null);
+    this._loading$.next(true);
+    this._error$.next(null);
     try {
-      const items = await firstValueFrom(
-        this.http.get<RecordListItem[]>(`/api/records?limit=${limit}`),
-      );
-      this._records.set(items);
+      const items = await this.http.get<RecordListItem[]>(`/api/records?limit=${limit}`).toPromise();
+      this._records$.next(items ?? []);
     } catch {
-      this._error.set('Failed to load records.');
+      this._error$.next('Failed to load records.');
     } finally {
-      this._loading.set(false);
+      this._loading$.next(false);
     }
   }
 
@@ -62,9 +65,10 @@ export class RecordsService {
     recordId: string,
     patch: Pick<RecordListItem, 'isLocked' | 'lockedByDisplayName' | 'lockedAtUtc'>,
   ): void {
-    this._records.update((items) =>
-      items.map((item) => (item.id === recordId ? { ...item, ...patch } : item)),
+    const updatedItems = this.records.map((item) =>
+      item.id === recordId ? { ...item, ...patch } : item,
     );
+    this._records$.next(updatedItems);
   }
 
   /**
@@ -72,12 +76,11 @@ export class RecordsService {
    * Stamps `updatedAt` with the current time so the table column reflects the edit.
    */
   updateRecord(recordId: string, changes: Partial<RecordListItem>): void {
-    this._records.update((items) =>
-      items.map((item) =>
-        item.id === recordId
-          ? { ...item, ...changes, updatedAt: new Date().toISOString() }
-          : item,
-      ),
+    const updatedItems = this.records.map((item) =>
+      item.id === recordId
+        ? { ...item, ...changes, updatedAt: new Date().toISOString() }
+        : item,
     );
+    this._records$.next(updatedItems);
   }
 }
