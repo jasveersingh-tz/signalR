@@ -13,7 +13,7 @@ import { FormBuilder, FormGroup } from '@angular/forms';
 import { Subscription } from 'rxjs';
 import { LockService } from '../../services/lock';
 import { MockAuth } from '../../services/mock-auth';
-import { LockState } from '../../models/lock.model';
+import { LockRequest, LockState } from '../../models/lock.model';
 import { MOCK_RECORDS } from '../../data/mock-records';
 
 @Component({
@@ -30,8 +30,13 @@ export class RecordEditor implements OnInit, OnChanges, OnDestroy {
   lockState: LockState = { status: 'unlocked' };
   statusMessage = '';
   isSaving = false;
+  incomingRequests: LockRequest[] = [];
+  requestPending = false;
 
   private _sub?: Subscription;
+  private _lockRequestedSub?: Subscription;
+  private _requestPendingTimer: ReturnType<typeof setTimeout> | null = null;
+  private _requestDismissTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(
     private fb: FormBuilder,
@@ -49,6 +54,18 @@ export class RecordEditor implements OnInit, OnChanges, OnDestroy {
     this._sub = this.lockService.lockState$.subscribe((state) => {
       this.lockState = state;
       this._syncFormState();
+    });
+
+    this._lockRequestedSub = this.lockService.lockRequested$.subscribe((req) => {
+      if (req.recordId !== this.recordId) return;
+      // Ignore duplicate requests from the same requester
+      if (this._requestDismissTimers.has(req.requesterConnectionId)) return;
+      this.incomingRequests = [...this.incomingRequests, req];
+      const timer = setTimeout(
+        () => this._dismissRequest(req.requesterConnectionId),
+        5 * 60 * 1000,
+      );
+      this._requestDismissTimers.set(req.requesterConnectionId, timer);
     });
 
     this._populateFormFromMockData();
@@ -79,6 +96,11 @@ export class RecordEditor implements OnInit, OnChanges, OnDestroy {
 
   ngOnDestroy(): void {
     this._sub?.unsubscribe();
+    this._lockRequestedSub?.unsubscribe();
+    if (this._requestPendingTimer !== null) clearTimeout(this._requestPendingTimer);
+    this._requestDismissTimers.forEach((t) => clearTimeout(t));
+    this._requestDismissTimers.clear();
+    this.incomingRequests = [];
     // Best-effort release on component destroy
     if (this.lockState.status === 'owned') {
       this.lockService.releaseLock(this.recordId);
@@ -125,6 +147,59 @@ export class RecordEditor implements OnInit, OnChanges, OnDestroy {
 
   async tryAcquire(): Promise<void> {
     await this.openEdit();
+  }
+
+  async requestAccess(): Promise<void> {
+    this.requestPending = true;
+    this._requestPendingTimer = setTimeout(() => {
+      this.requestPending = false;
+      this._requestPendingTimer = null;
+    }, 5 * 60 * 1000);
+    await this.lockService.requestAccess(this.recordId);
+  }
+
+  async saveAndAccept(req: LockRequest): Promise<void> {
+    this.isSaving = true;
+    await new Promise((r) => setTimeout(r, 600));
+    this.isSaving = false;
+    await this.lockService.acceptAccessRequest(
+      this.recordId,
+      req.requesterId,
+      req.requesterDisplayName,
+      req.requesterConnectionId,
+    );
+    this._clearAllRequests();
+  }
+
+  async discardAndAccept(req: LockRequest): Promise<void> {
+    await this.lockService.acceptAccessRequest(
+      this.recordId,
+      req.requesterId,
+      req.requesterDisplayName,
+      req.requesterConnectionId,
+    );
+    this._clearAllRequests();
+  }
+
+  rejectRequest(req: LockRequest): void {
+    this._dismissRequest(req.requesterConnectionId);
+  }
+
+  private _clearAllRequests(): void {
+    this._requestDismissTimers.forEach((t) => clearTimeout(t));
+    this._requestDismissTimers.clear();
+    this.incomingRequests = [];
+  }
+
+  private _dismissRequest(requesterConnectionId: string): void {
+    this.incomingRequests = this.incomingRequests.filter(
+      (r) => r.requesterConnectionId !== requesterConnectionId,
+    );
+    const timer = this._requestDismissTimers.get(requesterConnectionId);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this._requestDismissTimers.delete(requesterConnectionId);
+    }
   }
 
   async forceRelease(): Promise<void> {

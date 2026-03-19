@@ -11,6 +11,13 @@
       (locked {{ lockedSince }}).
     </span>
     <div class="banner__actions">
+      @if (!requestPending) {
+        <button class="btn btn--primary" (click)="tryAcquire.emit()">
+          Try Acquire
+        </button>
+      } @else {
+        <span class="badge badge--info">Waiting for response…</span>
+      }
       @if (isAdmin) {
         <button class="btn btn--danger" (click)="forceRelease.emit()">
           Force unlock (admin)

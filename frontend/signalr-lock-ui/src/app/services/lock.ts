@@ -7,7 +7,7 @@ import {
   Subject,
   firstValueFrom,
 } from 'rxjs';
-import { LockInfo, LockState } from '../models/lock.model';
+import { LockInfo, LockRequest, LockState } from '../models/lock.model';
 import { MockAuth } from './mock-auth';
 
 const HUB_URL = '/hubs/recordLock';
@@ -25,6 +25,11 @@ export class LockService implements OnDestroy {
   private _lastActivityTime: number = Date.now();
 
   private _allLocks$ = new BehaviorSubject<Map<string, LockInfo>>(new Map());
+
+  private _lockRequested$ = new Subject<LockRequest>();
+
+  /** Emits when another user requests access to the record this user is editing. */
+  readonly lockRequested$: Observable<LockRequest> = this._lockRequested$.asObservable();
 
   /** Observable of the current lock state for the active record. */
   readonly lockState$: Observable<LockState> = this._lockState$.asObservable();
@@ -159,6 +164,30 @@ export class LockService implements OnDestroy {
     await this._connection!.invoke('ForceRelease', recordId);
   }
 
+  /** Request access to a record locked by another user. */
+  async requestAccess(recordId: string): Promise<void> {
+    await this.ensureConnected();
+    const { userId, displayName } = this.auth.currentUser;
+    await this._connection!.invoke('RequestAccess', recordId, userId, displayName);
+  }
+
+  /** Accept a pending access request (called by the lock holder). */
+  async acceptAccessRequest(
+    recordId: string,
+    requesterUserId: string,
+    requesterDisplayName: string,
+    requesterConnectionId: string,
+  ): Promise<void> {
+    await this.ensureConnected();
+    await this._connection!.invoke(
+      'AcceptAccessRequest',
+      recordId,
+      requesterUserId,
+      requesterDisplayName,
+      requesterConnectionId,
+    );
+  }
+
   /** Start sending heartbeats to keep the lock alive. */
   startHeartbeat(recordId: string): void {
     this._stopHeartbeat();
@@ -181,11 +210,17 @@ export class LockService implements OnDestroy {
     this._connection.off('lockReleased');
     this._connection.off('lockHeartbeat');
     this._connection.off('error');
+    this._connection.off('lockRequested');
 
     this._connection.on('lockAcquired', (recordId: string, lock: LockInfo) => {
       this.zone.run(() => {
         if (recordId === this._currentRecordId) {
           const isOwnLock = lock.lockedByUserId === this.auth.currentUser.userId;
+          // If we were editing and someone else took the lock, stop our timers
+          if (!isOwnLock && this._lockState$.value.status === 'owned') {
+            this._stopHeartbeat();
+            this._stopInactivityTimer();
+          }
           this._lockState$.next(
             isOwnLock
               ? { status: 'owned', lock }
@@ -196,6 +231,14 @@ export class LockService implements OnDestroy {
         const acquireMap = new Map(this._allLocks$.value);
         acquireMap.set(recordId, lock);
         this._allLocks$.next(acquireMap);
+      });
+    });
+
+    this._connection.on('lockRequested', (request: LockRequest) => {
+      this.zone.run(() => {
+        if (request.recordId === this._currentRecordId) {
+          this._lockRequested$.next(request);
+        }
       });
     });
 

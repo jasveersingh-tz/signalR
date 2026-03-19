@@ -24,8 +24,31 @@
       [lock]="$any(lockState).lock"
       [isOwnLock]="false"
       [isAdmin]="auth.currentUser.isAdmin"
+      [requestPending]="requestPending"
+      (tryAcquire)="requestAccess()"
       (forceRelease)="forceRelease()"
     />
+  }
+
+  <!-- Incoming access request cards (shown to the lock holder) -->
+  @for (req of incomingRequests; track req.requesterConnectionId) {
+    <div class="request-card" role="alert" aria-live="assertive">
+      <span class="request-card__icon">📨</span>
+      <span class="request-card__text">
+        <strong>{{ req.requesterDisplayName }}</strong> is requesting access to edit this record.
+      </span>
+      <div class="request-card__actions">
+        <button class="btn btn--success" [disabled]="isSaving" (click)="saveAndAccept(req)">
+          {{ isSaving ? 'Saving…' : '💾 Save &amp; Accept' }}
+        </button>
+        <button class="btn btn--warning" [disabled]="isSaving" (click)="discardAndAccept(req)">
+          Discard &amp; Accept
+        </button>
+        <button class="btn btn--secondary" (click)="rejectRequest(req)">
+          Reject
+        </button>
+      </div>
+    </div>
   }
   @if (isUnlocked) {
     <div class="banner banner--unlocked" role="status">

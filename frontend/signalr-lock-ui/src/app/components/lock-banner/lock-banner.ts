@@ -11,6 +11,7 @@ export class LockBanner {
   @Input() lock!: LockInfo;
   @Input() isOwnLock = false;
   @Input() isAdmin = false;
+  @Input() requestPending = false;
   @Output() tryAcquire = new EventEmitter<void>();
   @Output() forceRelease = new EventEmitter<void>();
 

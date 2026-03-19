@@ -11,3 +11,10 @@ export type LockState =
   | { status: 'unlocked' }
   | { status: 'owned'; lock: LockInfo }
   | { status: 'locked-by-other'; lock: LockInfo };
+
+export interface LockRequest {
+  recordId: string;
+  requesterId: string;
+  requesterDisplayName: string;
+  requesterConnectionId: string;
+}
