@@ -91,7 +91,76 @@ public class RecordLockHub : Hub
         }
     }
 
-    /// <summary>Admin: force-release any lock on a record.</summary>
+    /// <summary>
+    /// Request access to a record locked by another user.
+    /// Forwards a lockRequested signal to the current lock holder.
+    /// Only called when the UI confirms the record is locked by someone else.
+    /// </summary>
+    public async Task RequestAccess(string recordId, string userId, string displayName)
+    {
+        if (string.IsNullOrWhiteSpace(recordId) || string.IsNullOrWhiteSpace(userId))
+        {
+            await Clients.Caller.SendAsync("error", "recordId and userId are required.");
+            return;
+        }
+
+        var currentLock = _lockStore.GetLock(recordId);
+        if (currentLock == null)
+        {
+            // Race: lock was released between the UI showing and the button being clicked
+            await Clients.Caller.SendAsync("error", "Record is no longer locked. Refresh and try editing directly.");
+            return;
+        }
+
+        _logger.LogInformation("RequestAccess: record={RecordId} requester={UserId} → holder conn={HolderConn}",
+            recordId, userId, currentLock.ConnectionId);
+
+        await Clients.Client(currentLock.ConnectionId).SendAsync("lockRequested", new
+        {
+            recordId,
+            requesterId = userId,
+            requesterDisplayName = displayName,
+            requesterConnectionId = Context.ConnectionId
+        });
+    }
+
+    /// <summary>
+    /// Accept a pending access request: release the caller's lock and grant it to the requester.
+    /// Broadcasts lockAcquired on success.
+    /// </summary>
+    public async Task AcceptAccessRequest(
+        string recordId, string requesterUserId, string requesterDisplayName, string requesterConnectionId)
+    {
+        if (string.IsNullOrWhiteSpace(recordId))
+        {
+            await Clients.Caller.SendAsync("error", "recordId is required.");
+            return;
+        }
+
+        var currentLock = _lockStore.GetLock(recordId);
+        if (currentLock == null || currentLock.ConnectionId != Context.ConnectionId)
+        {
+            await Clients.Caller.SendAsync("error", "You do not hold the lock on this record.");
+            return;
+        }
+
+        _lockStore.TryRelease(recordId, Context.ConnectionId);
+        var (acquired, newLock) = _lockStore.TryAcquire(recordId, requesterUserId, requesterDisplayName, requesterConnectionId);
+
+        if (acquired)
+        {
+            _logger.LogInformation("AcceptAccessRequest: record={RecordId} transferred to user={UserId}", recordId, requesterUserId);
+            await Clients.Group(AllLocksGroup).SendAsync("lockAcquired", recordId, newLock);
+        }
+        else
+        {
+            _logger.LogWarning("AcceptAccessRequest: lock transfer race on record={RecordId}", recordId);
+            await Clients.Caller.SendAsync("error", "Lock transfer failed — record may have been acquired by another user.");
+        }
+    }
+
+
+/// <summary>Admin: force-release any lock on a record.</summary>
     public async Task ForceRelease(string recordId)
     {
         // POC: accept any caller; production should verify admin role.
