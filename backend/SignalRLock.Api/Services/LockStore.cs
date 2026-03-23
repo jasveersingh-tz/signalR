@@ -24,6 +24,9 @@ public interface ILockStore
     /// <summary>Release a lock owned by the given connection.</summary>
     bool TryRelease(string recordId, string connectionId);
 
+    /// <summary>Release a lock if it is owned by the given user.</summary>
+    bool TryReleaseByUser(string recordId, string userId);
+
     /// <summary>Force-release any lock on the record (admin action).</summary>
     LockInfo? ForceRelease(string recordId);
 
@@ -38,6 +41,29 @@ public interface ILockStore
 
     /// <summary>Release all locks held by a connection (called on disconnect after grace period).</summary>
     IReadOnlyList<LockInfo> ReleaseAllByConnection(string connectionId);
+
+    // ── Lock transfer ──────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Store a pending lock transfer request.
+    /// Returns (true, false) on success.
+    /// Returns (false, true) if a cooldown is active (blocked).
+    /// Returns (false, false) if a request from another user is already pending.
+    /// </summary>
+    (bool Stored, bool InCooldown) TrySetTransferRequest(
+        string recordId, string requestingUserId, string requestingDisplayName, string requestingConnectionId);
+
+    /// <summary>Get the pending transfer request for a record, or null if none.</summary>
+    LockTransferRequest? GetTransferRequest(string recordId);
+
+    /// <summary>Remove the pending transfer request (called on approve or reject).</summary>
+    void ClearTransferRequest(string recordId);
+
+    /// <summary>Activate a cooldown that blocks new transfer requests for the given duration.</summary>
+    void SetTransferCooldown(string recordId, int cooldownMs);
+
+    /// <summary>Returns whether a cooldown is active and how many seconds remain.</summary>
+    (bool Active, long RemainingSeconds) IsTransferCooldownActive(string recordId);
 }
 
 public class RedisLockStore : ILockStore
@@ -48,6 +74,9 @@ public class RedisLockStore : ILockStore
     private readonly ILogger<RedisLockStore> _logger;
     private const string LockKeyPrefix = "lock:";
     private const string ConnectionLockKeyPrefix = "connection-locks:";
+    private const string TransferRequestKeyPrefix = "transfer-request:";
+    private const string TransferCooldownKeyPrefix = "transfer-cooldown:";
+    private const int TransferRequestTtlMs = 180_000; // 3 minutes — stale requests self-clean
 
     public RedisLockStore(
         IConnectionMultiplexer redis,
@@ -128,6 +157,26 @@ public class RedisLockStore : ILockStore
                 return true;
             }
         }
+        return false;
+    }
+
+    public bool TryReleaseByUser(string recordId, string userId)
+    {
+        var lockKey = GetLockKey(recordId);
+        var existingValue = _db.StringGet(lockKey);
+
+        if (existingValue.HasValue)
+        {
+            var existingLock = JsonSerializer.Deserialize<LockInfo>(existingValue.ToString());
+            if (existingLock?.LockedByUserId == userId)
+            {
+                _db.KeyDelete(lockKey);
+                _db.SetRemove(GetConnectionLocksKey(existingLock.ConnectionId), recordId);
+                _logger.LogInformation("Lock released on record {RecordId} by user {UserId}.", recordId, userId);
+                return true;
+            }
+        }
+
         return false;
     }
 
@@ -222,4 +271,66 @@ public class RedisLockStore : ILockStore
     private string GetLockKey(string recordId) => $"{LockKeyPrefix}{recordId}";
 
     private string GetConnectionLocksKey(string connectionId) => $"{ConnectionLockKeyPrefix}{connectionId}";
+
+    // ── Lock transfer implementation ──────────────────────────────────────────
+
+    public (bool Stored, bool InCooldown) TrySetTransferRequest(
+        string recordId, string requestingUserId, string requestingDisplayName, string requestingConnectionId)
+    {
+        // Abort if cooldown is active
+        if (_db.KeyExists(GetTransferCooldownKey(recordId)))
+            return (false, true);
+
+        var requestKey = GetTransferRequestKey(recordId);
+
+        // Abort if another (different) request is already pending
+        var existing = _db.StringGet(requestKey);
+        if (existing.HasValue)
+        {
+            var existingRequest = JsonSerializer.Deserialize<LockTransferRequest>(existing.ToString());
+            if (existingRequest?.RequestingUserId != requestingUserId)
+                return (false, false); // already another pending request
+        }
+
+        var request = new LockTransferRequest
+        {
+            RecordId = recordId,
+            RequestingUserId = requestingUserId,
+            RequestingDisplayName = requestingDisplayName,
+            RequestingConnectionId = requestingConnectionId,
+            RequestedAtUtc = DateTime.UtcNow,
+        };
+
+        _db.StringSet(requestKey, JsonSerializer.Serialize(request),
+            TimeSpan.FromMilliseconds(TransferRequestTtlMs));
+
+        _logger.LogInformation("Transfer request stored for record {RecordId} from user {UserId}.", recordId, requestingUserId);
+        return (true, false);
+    }
+
+    public LockTransferRequest? GetTransferRequest(string recordId)
+    {
+        var value = _db.StringGet(GetTransferRequestKey(recordId));
+        return value.HasValue ? JsonSerializer.Deserialize<LockTransferRequest>(value.ToString()) : null;
+    }
+
+    public void ClearTransferRequest(string recordId)
+        => _db.KeyDelete(GetTransferRequestKey(recordId));
+
+    public void SetTransferCooldown(string recordId, int cooldownMs)
+    {
+        _db.StringSet(GetTransferCooldownKey(recordId), "1", TimeSpan.FromMilliseconds(cooldownMs));
+        _logger.LogInformation("Transfer cooldown set for record {RecordId} ({CooldownMs}ms).", recordId, cooldownMs);
+    }
+
+    public (bool Active, long RemainingSeconds) IsTransferCooldownActive(string recordId)
+    {
+        var ttl = _db.KeyTimeToLive(GetTransferCooldownKey(recordId));
+        if (ttl is null || ttl.Value <= TimeSpan.Zero)
+            return (false, 0);
+        return (true, (long)Math.Ceiling(ttl.Value.TotalSeconds));
+    }
+
+    private string GetTransferRequestKey(string recordId) => $"{TransferRequestKeyPrefix}{recordId}";
+    private string GetTransferCooldownKey(string recordId) => $"{TransferCooldownKeyPrefix}{recordId}";
 }

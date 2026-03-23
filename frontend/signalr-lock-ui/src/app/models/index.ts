@@ -30,6 +30,13 @@ export type LockState =
   | { status: 'owned'; lock: LockInfo }
   | { status: 'locked-by-other'; lock: LockInfo };
 
+/** Payload emitted when another user requests an access transfer. */
+export interface LockTransferInfo {
+  recordId: string;
+  requestingUserId: string;
+  requestingDisplayName: string;
+}
+
 // ── Records list ──────────────────────────────────────────────────
 
 /**

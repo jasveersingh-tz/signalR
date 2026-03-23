@@ -13,7 +13,12 @@
       </tr>
     </thead>
     <tbody>
-      <tr *ngFor="let record of records; trackBy: trackByRecordId" (click)="onRowClick(record)" [class.row--pending]="pendingAcquireRecordId === record.id">
+      <tr
+        *ngFor="let record of records; trackBy: trackByRecordId"
+        (click)="onRowClick(record)"
+        [class.row--pending]="pendingAcquireRecordId === record.id"
+        [class.row--selected]="selectedRecordId === record.id"
+      >
         <td>
           <span class="lock-icon" [class]="'lock-icon ' + lockClass(record)" [title]="lockTooltip(record)">
             <svg *ngIf="record.isLocked" class="lock-icon__svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false">

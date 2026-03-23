@@ -1,24 +1,22 @@
-.dialog-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgb(17 24 39 / 45%);
-  display: grid;
-  place-items: center;
+.dialog-card {
+  width: 100%;
+  background: #fff;
+  border-radius: 10px;
+  border: 1px solid #d8e0ef;
+  box-shadow: 0 10px 24px rgb(0 0 0 / 10%);
   padding: 1rem;
-  z-index: 50;
 }
 
-.dialog-card {
-  width: min(680px, 96vw);
-  background: #fff;
-  border-radius: 12px;
-  border: 1px solid #d8e0ef;
-  box-shadow: 0 14px 28px rgb(0 0 0 / 14%);
-  padding: 1rem;
+.dialog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
 }
 
 .dialog-header h2 {
   margin: 0;
+  font-size: 1.05rem;
 }
 
 .dialog-header small {
@@ -43,17 +41,25 @@
   border-radius: 6px;
 }
 
-.dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
+.dialog-form input[readonly] {
+  background: #f8fafc;
+  color: #64748b;
+  cursor: default;
 }
+
+/* ── Buttons ─────────────────────────────────────────────────────── */
 
 .btn {
   border: 0;
   border-radius: 6px;
   padding: 0.5rem 0.9rem;
   cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .btn--primary {
@@ -61,44 +67,113 @@
   background: #1d4ed8;
 }
 
+.btn--primary:hover:not(:disabled) {
+  background: #1e40af;
+}
+
 .btn--secondary {
   background: #e2e8f0;
   color: #0f172a;
 }
 
-.banner {
-  border-radius: 6px;
-  padding: 0.5rem 0.75rem;
-  font-size: 0.85rem;
+.btn--secondary:hover:not(:disabled) {
+  background: #cbd5e1;
 }
 
-.banner--warn {
-  color: #9a3412;
-  background: #fff7ed;
-  border: 1px solid #fdba74;
+.btn--acquire {
+  color: #fff;
+  background: #059669;
 }
 
-.timeout-prompt {
+.btn--acquire:hover:not(:disabled) {
+  background: #047857;
+}
+
+/* ── Overlay prompts (session timeout / inactivity / transfer) ──── */
+
+.overlay-prompt {
   margin-top: 1rem;
-  border: 1px solid #f59e0b;
-  background: #fffbeb;
   border-radius: 10px;
   padding: 1rem;
 }
 
-.timeout-prompt__title {
-  margin: 0 0 0.5rem;
-  font-weight: 700;
+/* Session timeout — amber */
+.overlay-prompt--warn {
+  border: 1px solid #f59e0b;
+  background: #fffbeb;
+}
+
+.overlay-prompt--warn .overlay-prompt__title {
   color: #92400e;
 }
 
-.timeout-prompt__message {
-  margin: 0;
+.overlay-prompt--warn .overlay-prompt__message {
   color: #78350f;
 }
 
-.timeout-prompt__actions {
-  margin-top: 0.9rem;
+/* Inactivity warning — blue */
+.overlay-prompt--inactivity {
+  border: 1px solid #3b82f6;
+  background: #eff6ff;
+}
+
+.overlay-prompt--inactivity .overlay-prompt__title {
+  color: #1e3a8a;
+}
+
+.overlay-prompt--inactivity .overlay-prompt__message,
+.overlay-prompt--inactivity .overlay-prompt__sub {
+  color: #1e40af;
+}
+
+/* Transfer request — purple */
+.overlay-prompt--transfer {
+  border: 1px solid #8b5cf6;
+  background: #f5f3ff;
+}
+
+.overlay-prompt--transfer .overlay-prompt__title {
+  color: #4c1d95;
+}
+
+.overlay-prompt--transfer .overlay-prompt__message,
+.overlay-prompt--transfer .overlay-prompt__sub {
+  color: #5b21b6;
+}
+
+.overlay-prompt__title {
+  margin: 0 0 0.5rem;
+  font-weight: 700;
+  font-size: 1rem;
+}
+
+.overlay-prompt__message {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.overlay-prompt__sub {
+  margin: 0.4rem 0 0;
+  font-size: 0.8rem;
+  opacity: 0.8;
+}
+
+.overlay-prompt__actions {
+  margin-top: 1rem;
   display: flex;
   justify-content: flex-end;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+/* Legacy aliases (kept for any external references) */
+.timeout-prompt          { margin-top: 1rem; border: 1px solid #f59e0b; background: #fffbeb; border-radius: 10px; padding: 1rem; }
+.timeout-prompt__title   { margin: 0 0 0.5rem; font-weight: 700; color: #92400e; }
+.timeout-prompt__message { margin: 0; color: #78350f; }
+.timeout-prompt__actions { margin-top: 0.9rem; display: flex; justify-content: flex-end; }
+
+@media (max-width: 980px) {
+  .dialog-card {
+    box-shadow: none;
+  }
 }

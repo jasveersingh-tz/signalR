@@ -7,21 +7,52 @@
   </header>
 
   <main class="app-content">
-    <p *ngIf="bannerMessage" class="banner" role="status">{{ bannerMessage }}</p>
+    <div
+      *ngIf="bannerMessage"
+      class="banner"
+      [class.banner--info]="bannerTone === 'info'"
+      [class.banner--warn]="bannerTone === 'warn'"
+      [class.banner--error]="bannerTone === 'error'"
+      [class.banner--success]="bannerTone === 'success'"
+      role="status"
+    >
+      <span>{{ bannerMessage }}</span>
+      <button
+        *ngIf="canAcquireFromToolbar"
+        type="button"
+        class="btn btn--acquire"
+        (click)="onAcquireFromToolbar()"
+      >
+        Acquire Lock
+      </button>
+    </div>
 
-    <app-records-list
-      [records]="records"
-      [loading]="loading"
-      [error]="error"
-      [pendingAcquireRecordId]="pendingAcquireRecordId"
-      (openRecord)="onOpenRecord($event)"
-    ></app-records-list>
+    <section class="workspace-layout">
+      <div class="workspace-layout__list">
+        <app-records-list
+          [records]="records"
+          [loading]="loading"
+          [error]="error"
+          [pendingAcquireRecordId]="pendingAcquireRecordId"
+          [selectedRecordId]="activeRecord?.id || null"
+          (openRecord)="onOpenRecord($event)"
+        ></app-records-list>
+      </div>
 
-    <app-record-dialog
-      *ngIf="selectedRecord"
-      [record]="selectedRecord"
-      [connectionLost]="connectionLost"
-      (closed)="onDialogClosed($event)"
-    ></app-record-dialog>
+      <aside class="workspace-layout__panel">
+        <app-record-dialog
+          *ngIf="selectedRecord"
+          [record]="selectedRecord"
+          [connectionLost]="connectionLost"
+          (banner)="onPanelBanner($event)"
+          (closed)="onDialogClosed($event)"
+        ></app-record-dialog>
+
+        <section *ngIf="!selectedRecord" class="panel-empty" aria-live="polite">
+          <h2>Select a record</h2>
+          <p>Choose a row from the list to open its details and lock state on this panel.</p>
+        </section>
+      </aside>
+    </section>
   </main>
 </div>

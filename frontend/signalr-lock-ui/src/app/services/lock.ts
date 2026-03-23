@@ -8,8 +8,10 @@
  *  4. Keep `RecordsService` list in sync with live lock events (optimistic patch +
  *     debounced REST refresh every 300 ms after any lock event).
  *  5. Send keep-alive heartbeats every 30 s while a lock is held.
- *  6. Auto-release after 60 s of inactivity (server also enforces this).
- *  7. Reconnect transparently — re-subscribes to all hub groups on reconnect.
+ *  6. Track real user activity (mouse / keyboard) and emit `inactivityWarning$`
+ *     after 30 minutes of no activity while a lock is held.
+ *  7. Support lock-transfer flow: request, approve, reject (with 5-min cooldown).
+ *  8. Reconnect transparently — re-subscribes to all hub groups on reconnect.
  */
 
 import { Injectable, OnDestroy } from '@angular/core';
@@ -21,17 +23,21 @@ import {
   Subject,
 } from 'rxjs';
 import { debounceTime, filter, first, timeout } from 'rxjs/operators';
-import { LockInfo, LockState } from '../models';
+import { LockInfo, LockState, LockTransferInfo } from '../models';
 import { MockAuth } from './mock-auth';
 import { RecordsService } from './records.service';
 
 // ── Configuration constants ────────────────────────────────────────
 const HUB_URL = '/hubs/recordLock';
-const HEARTBEAT_INTERVAL_MS = 30_000;   // ping the server every 30 s to keep the lock alive
-const INACTIVITY_TIMEOUT_MS = 60_000;   // auto-release after 60 s with no user activity
-const ACQUIRE_TIMEOUT_MS    = 2_500;    // max wait for hub response after AcquireLock invoke
-const CONNECT_TIMEOUT_MS    = 5_000;    // max wait for initial hub connection
-const REFRESH_DEBOUNCE_MS   = 300;      // collapse rapid lock events before refreshing the list
+const HEARTBEAT_INTERVAL_MS  = 30_000;       // ping the server every 30 s to keep the lock alive
+const INACTIVITY_WARNING_MS  = 60_000;  // show inactivity modal after 30 min of no activity
+const ACQUIRE_TIMEOUT_MS     = 2_500;        // max wait for hub response after AcquireLock invoke
+const CONNECT_TIMEOUT_MS     = 5_000;        // max wait for initial hub connection
+const REFRESH_DEBOUNCE_MS    = 300;          // collapse rapid lock events before refreshing the list
+const RELEASE_ON_UNLOAD_ENDPOINT = '/api/locks/release-on-unload';
+
+// Events on the document that reset the inactivity countdown
+const ACTIVITY_EVENTS = ['mousemove', 'keydown', 'click', 'touchstart'] as const;
 
 /** Return type of `acquireLock()` — tells the caller whether the lock was granted. */
 export interface AcquireResult {
@@ -43,48 +49,86 @@ export interface AcquireResult {
 export class LockService implements OnDestroy {
   // ── Private state ────────────────────────────────────────────────
   private _connection: signalR.HubConnection | null = null;
-  /** Guards concurrent callers so only one connection attempt runs at a time. */
   private _connectingPromise: Promise<void> | null = null;
-  /** Tracks the lock state for whichever record the editor currently has open. */
   private _lockState$ = new BehaviorSubject<LockState>({ status: 'unlocked' });
-  /** Emits true when the hub is reconnecting, false when fully reconnected. */
   private _connectionLost$ = new BehaviorSubject<boolean>(false);
   private _destroyed$ = new Subject<void>();
-  /** Fires on every lock event; debounced to trigger a REST refresh of the list. */
   private _refreshTrigger$ = new Subject<void>();
   private _heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private _inactivityTimer: ReturnType<typeof setTimeout> | null = null;
-  /** The record whose lock state the editor is currently tracking. */
   private _currentRecordId: string | null = null;
-  /** All record IDs the client has joined hub groups for (used to re-subscribe after reconnect). */
   private _subscribedRecordIds = new Set<string>();
 
+  /** Bound handler reference kept so it can be removed from document listeners. */
+  private _activityHandler = () => this._onUserActivity();
+  private _activityTracking = false;
+  private _releaseOnUnloadHandler = () => this._releaseLockOnUnload();
+
   // ── Public observables ───────────────────────────────────────────
-  readonly lockState$: Observable<LockState> = this._lockState$.asObservable();
+
+  readonly lockState$: Observable<LockState>   = this._lockState$.asObservable();
   readonly connectionLost$: Observable<boolean> = this._connectionLost$.asObservable();
+
+  /**
+   * Fires when the user has been idle for 30 minutes while holding a lock.
+   * The dialog subscribes and shows the "extend or close session" modal.
+   */
+  private _inactivityWarning$ = new Subject<void>();
+  readonly inactivityWarning$: Observable<void> = this._inactivityWarning$.asObservable();
+
+  /**
+   * Fires on the lock HOLDER's side when another user requests access to the record.
+   * The dialog subscribes and shows the approve / reject modal.
+   */
+  private _lockTransferRequested$ = new Subject<LockTransferInfo>();
+  readonly lockTransferRequested$: Observable<LockTransferInfo> = this._lockTransferRequested$.asObservable();
+
+  /**
+   * Fires on the REQUESTER's side when the holder approves the transfer.
+   * The view-only dialog uses this to trigger a direct `acquireLock()` call.
+   */
+  private _lockTransferApproved$ = new Subject<string>();          // emits recordId
+  readonly lockTransferApproved$: Observable<string> = this._lockTransferApproved$.asObservable();
+
+  /**
+   * Fires on the REQUESTER's side when the holder rejects the transfer.
+   */
+  private _lockTransferRejected$ = new Subject<string>();          // emits recordId
+  readonly lockTransferRejected$: Observable<string> = this._lockTransferRejected$.asObservable();
+
+  /**
+   * Fires when a cooldown is blocking a new transfer request.
+   * Payload: { recordId, remainingSeconds }
+   */
+  private _lockTransferCooldown$ = new Subject<{ recordId: string; remainingSeconds: number }>();
+  readonly lockTransferCooldown$: Observable<{ recordId: string; remainingSeconds: number }> =
+    this._lockTransferCooldown$.asObservable();
+
+  /**
+   * Fires when the lock expired (released) just as a transfer was being requested.
+   * Requester should try a direct acquire.
+   */
+  private _lockTransferExpired$ = new Subject<string>();           // emits recordId
+  readonly lockTransferExpired$: Observable<string> = this._lockTransferExpired$.asObservable();
 
   constructor(
     private readonly http: HttpClient,
     private readonly auth: MockAuth,
     private readonly recordsService: RecordsService,
   ) {
-    // Debounce rapid lock events (e.g. multiple users locking in quick succession)
-    // before asking the backend for a fresh record list.
     this._refreshTrigger$
       .pipe(debounceTime(REFRESH_DEBOUNCE_MS))
       .subscribe(() => void this.recordsService.refresh(10));
+
+    // Browser refresh/close can tear down SignalR before async release invokes finish.
+    window.addEventListener('pagehide', this._releaseOnUnloadHandler);
+    window.addEventListener('beforeunload', this._releaseOnUnloadHandler);
   }
 
   // ── Connection management ────────────────────────────────────────
 
-  /**
-   * Ensures a live hub connection exists before any hub method is invoked.
-   * Multiple concurrent callers share the same in-flight Promise so only one
-   * WebSocket handshake ever happens at a time.
-   */
   private async ensureConnected(): Promise<void> {
     if (this._connection?.state === signalR.HubConnectionState.Connected) return;
-
     if (this._connectingPromise) return this._connectingPromise;
 
     this._connectingPromise = this._createAndStart().finally(() => {
@@ -93,7 +137,6 @@ export class LockService implements OnDestroy {
     return this._connectingPromise;
   }
 
-  /** Build the HubConnection, attach reconnect hooks, register event handlers and start it. */
   private async _createAndStart(): Promise<void> {
     this._connection = new signalR.HubConnectionBuilder()
       .withUrl(HUB_URL)
@@ -103,18 +146,15 @@ export class LockService implements OnDestroy {
 
     this._registerHubHandlers();
 
-    // Notify the UI when connectivity is lost / restored
     this._connection.onreconnecting(() => this._connectionLost$.next(true));
     this._connection.onreconnected(async () => {
       this._connectionLost$.next(false);
-      // Re-join all hub groups we were part of before the disconnect
       if (this._subscribedRecordIds.size > 0) {
         await this._connection!.invoke('SubscribeToRecords', Array.from(this._subscribedRecordIds));
       }
       this._triggerRefresh();
     });
 
-    // Fail fast if the server doesn't respond within CONNECT_TIMEOUT_MS
     const connectTimeout = new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error('SignalR connect timeout')), CONNECT_TIMEOUT_MS),
     );
@@ -124,17 +164,12 @@ export class LockService implements OnDestroy {
 
   // ── Subscription ─────────────────────────────────────────────────
 
-  /**
-   * Subscribe to hub events for a *single* record and pre-load its current
-   * lock state from the REST endpoint.  Called by the legacy RecordEditor component.
-   */
   async subscribeToRecord(recordId: string): Promise<void> {
     this._stopHeartbeat();
     this._stopInactivityTimer();
     this._currentRecordId = recordId;
     this._lockState$.next({ status: 'unlocked' });
 
-    // Pre-populate lock state from REST so the UI doesn't flicker on first render
     const existing = await this.http
       .get<LockInfo | null>(`/api/locks/${recordId}`)
       .toPromise()
@@ -151,11 +186,6 @@ export class LockService implements OnDestroy {
     await this._connection!.invoke('SubscribeToRecords', [recordId]);
   }
 
-  /**
-   * Join hub groups for a *batch* of record IDs.
-   * Called by the records-list view so lock icons update in real time.
-   * Deduplicates IDs and skips empty strings.
-   */
   async subscribeToRecords(recordIds: string[]): Promise<void> {
     if (!recordIds.length) return;
     const normalized = [...new Set(recordIds.filter((id) => id.trim()))];
@@ -164,16 +194,16 @@ export class LockService implements OnDestroy {
     await this._connection!.invoke('SubscribeToRecords', normalized);
   }
 
+  async getLockInfo(recordId: string): Promise<LockInfo | null> {
+    if (!recordId?.trim()) return null;
+    return this.http
+      .get<LockInfo | null>(`/api/locks/${recordId}`)
+      .toPromise()
+      .catch(() => null);
+  }
+
   // ── Lock operations ──────────────────────────────────────────────
 
-  /**
-   * Ask the hub to acquire the lock for `recordId`.
-   * Waits up to ACQUIRE_TIMEOUT_MS for the hub to respond with `lockAcquired`
-   * or `lockRejected`, then returns an `AcquireResult`.
-   *
-   * On success also patches the in-memory records list optimistically so the
-   * lock icon updates immediately without waiting for the next REST refresh.
-   */
   async acquireLock(recordId: string): Promise<AcquireResult> {
     await this.ensureConnected();
     this._currentRecordId = recordId;
@@ -182,7 +212,6 @@ export class LockService implements OnDestroy {
     const { userId, displayName } = this.auth.currentUser;
     await this._connection!.invoke('AcquireLock', recordId, userId, displayName);
 
-    // Wait for `lockAcquired` or `lockRejected` hub events (handled in _registerHubHandlers)
     const decision = (await this._lockState$
       .pipe(
         filter((s) => s.status !== 'unlocked'),
@@ -194,7 +223,6 @@ export class LockService implements OnDestroy {
 
     if (decision.status === 'owned') {
       const lock = decision.lock;
-      // Optimistically update the list row so the lock icon turns red immediately
       this.recordsService.patchLock(recordId, {
         isLocked: true,
         lockedByDisplayName: lock.lockedByDisplayName,
@@ -207,20 +235,13 @@ export class LockService implements OnDestroy {
       return { acquired: false, lock: decision.lock };
     }
 
-    // Timed out — treat as failed acquire
     return { acquired: false };
   }
 
-  /**
-   * Release the lock for `recordId`.
-   * Optimistically clears the list row, then sends the ReleaseLock hub method.
-   * Safe to call even when disconnected (skips the hub invoke in that case).
-   */
   async releaseLock(recordId: string): Promise<void> {
     this._stopHeartbeat();
     this._stopInactivityTimer();
 
-    // Optimistically clear the lock in the list before the server confirms
     this.recordsService.patchLock(recordId, {
       isLocked: false,
       lockedByDisplayName: undefined,
@@ -233,11 +254,6 @@ export class LockService implements OnDestroy {
     this._lockState$.next({ status: 'unlocked' });
   }
 
-  /**
-   * Tries to release the lock, retrying once on failure.
-   * Returns `true` if release succeeded, `false` if both attempts failed
-   * (the lock will expire server-side via the inactivity timeout).
-   */
   async releaseLockWithRetry(recordId: string): Promise<boolean> {
     try {
       await this.releaseLock(recordId);
@@ -252,15 +268,41 @@ export class LockService implements OnDestroy {
     }
   }
 
-  // ── Heartbeat ────────────────────────────────────────────────────
+  // ── Lock transfer ─────────────────────────────────────────────────
 
   /**
-   * Start sending periodic Heartbeat hub messages to prevent the server from
-   * expiring the lock due to inactivity.  Automatically stops when the lock is
-   * released or the component is destroyed.
+   * Send a request to the current lock holder asking them to transfer the lock.
+   * The holder will receive a `lockTransferRequested` hub event (shown as an in-dialog modal).
    */
+  async requestLockTransfer(recordId: string): Promise<void> {
+    await this.ensureConnected();
+    const { userId, displayName } = this.auth.currentUser;
+    await this._connection!.invoke('RequestLockTransfer', recordId, userId, displayName);
+  }
+
+  /**
+   * Called by the lock holder to approve a pending transfer request.
+   * The holder's lock is released server-side; the requester gets `lockTransferApproved`.
+   */
+  async approveLockTransfer(recordId: string): Promise<void> {
+    await this.ensureConnected();
+    await this._connection!.invoke('ApproveLockTransfer', recordId);
+  }
+
+  /**
+   * Called by the lock holder to reject a pending transfer request.
+   * Sets a 5-minute cooldown on the record; the requester gets `lockTransferRejected`.
+   */
+  async rejectLockTransfer(recordId: string): Promise<void> {
+    await this.ensureConnected();
+    await this._connection!.invoke('RejectLockTransfer', recordId);
+  }
+
+  // ── Heartbeat ────────────────────────────────────────────────────
+
   startHeartbeat(recordId: string): void {
     this._stopHeartbeat();
+    this._startActivityTracking();
     this._heartbeatTimer = setInterval(async () => {
       if (
         this._connection?.state === signalR.HubConnectionState.Connected &&
@@ -271,25 +313,51 @@ export class LockService implements OnDestroy {
     }, HEARTBEAT_INTERVAL_MS);
   }
 
+  /**
+   * Reset the 30-minute inactivity countdown; called when the user clicks "Extend Session".
+   */
+  extendSession(): void {
+    this._resetInactivityTimer();
+  }
+
+  // ── Activity tracking ─────────────────────────────────────────────
+
+  private _startActivityTracking(): void {
+    if (this._activityTracking) return;
+    this._activityTracking = true;
+    ACTIVITY_EVENTS.forEach((evt) =>
+      document.addEventListener(evt, this._activityHandler, { passive: true }),
+    );
+    this._resetInactivityTimer();
+  }
+
+  private _stopActivityTracking(): void {
+    if (!this._activityTracking) return;
+    ACTIVITY_EVENTS.forEach((evt) =>
+      document.removeEventListener(evt, this._activityHandler),
+    );
+    this._activityTracking = false;
+  }
+
+  private _onUserActivity(): void {
+    if (this._lockState$.value.status === 'owned') {
+      this._resetInactivityTimer();
+    }
+  }
+
   // ── Hub event handlers ───────────────────────────────────────────
 
-  /**
-   * Register handlers for all inbound hub events.
-   * Called once when the connection is first created; the `.off()` calls
-   * before each `.on()` prevent duplicate handlers if this method were
-   * ever called again (defensive).
-   */
   private _registerHubHandlers(): void {
     if (!this._connection) return;
 
-    // Clear any existing handlers first (safety net)
-    ['lockAcquired', 'lockRejected', 'lockReleased', 'lockHeartbeat', 'error']
-      .forEach((evt) => this._connection!.off(evt));
+    [
+      'lockAcquired', 'lockRejected', 'lockReleased', 'lockHeartbeat', 'error',
+      'lockTransferRequested', 'lockTransferApproved', 'lockTransferRejected',
+      'lockTransferCooldown', 'lockTransferExpired',
+    ].forEach((evt) => this._connection!.off(evt));
 
-    // ── lockAcquired ─────────────────────────────────────────────
-    // Fired for every client in the record's hub group when a lock is granted.
+    // ── lockAcquired ──────────────────────────────────────────────
     this._connection.on('lockAcquired', (recordId: string, lock: LockInfo) => {
-      // Keep the list row in sync for all watchers (including other tabs/users)
       this.recordsService.patchLock(recordId, {
         isLocked: true,
         lockedByDisplayName: lock.lockedByDisplayName,
@@ -297,7 +365,6 @@ export class LockService implements OnDestroy {
       });
       this._triggerRefresh();
 
-      // Only update the editor lock-state for the record currently open
       if (recordId === this._currentRecordId) {
         if (lock.lockedByUserId === this.auth.currentUser.userId) {
           this._lockState$.next({ status: 'owned', lock });
@@ -308,16 +375,14 @@ export class LockService implements OnDestroy {
       }
     });
 
-    // ── lockRejected ─────────────────────────────────────────────
-    // Fired only for the requesting client when the lock was already held.
+    // ── lockRejected ──────────────────────────────────────────────
     this._connection.on('lockRejected', (recordId: string, lock: LockInfo) => {
       if (recordId === this._currentRecordId) {
         this._lockState$.next({ status: 'locked-by-other', lock });
       }
     });
 
-    // ── lockReleased ─────────────────────────────────────────────
-    // Fired for every client in the group when any user releases a lock.
+    // ── lockReleased ──────────────────────────────────────────────
     this._connection.on('lockReleased', (recordId: string) => {
       this.recordsService.patchLock(recordId, {
         isLocked: false,
@@ -336,11 +401,38 @@ export class LockService implements OnDestroy {
     this._connection.on('error', (message: string) => {
       console.error('[LockService] Hub error:', message);
     });
+
+    // ── lockTransferRequested (holder receives) ───────────────────
+    this._connection.on(
+      'lockTransferRequested',
+      (recordId: string, requestingUserId: string, requestingDisplayName: string) => {
+        this._lockTransferRequested$.next({ recordId, requestingUserId, requestingDisplayName });
+      },
+    );
+
+    // ── lockTransferApproved (requester receives) ─────────────────
+    this._connection.on('lockTransferApproved', (recordId: string) => {
+      this._lockTransferApproved$.next(recordId);
+    });
+
+    // ── lockTransferRejected (requester receives) ─────────────────
+    this._connection.on('lockTransferRejected', (recordId: string) => {
+      this._lockTransferRejected$.next(recordId);
+    });
+
+    // ── lockTransferCooldown (requester receives) ─────────────────
+    this._connection.on('lockTransferCooldown', (recordId: string, remainingSeconds: number) => {
+      this._lockTransferCooldown$.next({ recordId, remainingSeconds });
+    });
+
+    // ── lockTransferExpired ───────────────────────────────────────
+    this._connection.on('lockTransferExpired', (recordId: string) => {
+      this._lockTransferExpired$.next(recordId);
+    });
   }
 
   // ── Private helpers ──────────────────────────────────────────────
 
-  /** Debounced signal to refresh the records list after lock events settle. */
   private _triggerRefresh(): void { this._refreshTrigger$.next(); }
 
   private _stopHeartbeat(): void {
@@ -348,6 +440,7 @@ export class LockService implements OnDestroy {
       clearInterval(this._heartbeatTimer);
       this._heartbeatTimer = null;
     }
+    this._stopActivityTracking();
   }
 
   private _stopInactivityTimer(): void {
@@ -357,13 +450,16 @@ export class LockService implements OnDestroy {
     }
   }
 
-  /** Reset the inactivity countdown each time the user interacts while holding a lock. */
+  /**
+   * Restart the 30-minute inactivity countdown.
+   * When it fires, `inactivityWarning$` notifies the dialog to show the extend/close modal.
+   */
   private _resetInactivityTimer(): void {
     this._stopInactivityTimer();
     if (this._lockState$.value.status === 'owned') {
-      this._inactivityTimer = setTimeout(async () => {
-        if (this._currentRecordId) await this.releaseLock(this._currentRecordId);
-      }, INACTIVITY_TIMEOUT_MS);
+      this._inactivityTimer = setTimeout(() => {
+        this._inactivityWarning$.next();
+      }, INACTIVITY_WARNING_MS);
     }
   }
 
@@ -372,7 +468,27 @@ export class LockService implements OnDestroy {
     this._destroyed$.complete();
     this._stopHeartbeat();
     this._stopInactivityTimer();
+    window.removeEventListener('pagehide', this._releaseOnUnloadHandler);
+    window.removeEventListener('beforeunload', this._releaseOnUnloadHandler);
     void this._connection?.stop();
   }
-}
 
+  private _releaseLockOnUnload(): void {
+    const current = this._lockState$.value;
+    if (current.status !== 'owned') return;
+
+    const recordId = current.lock?.recordId ?? this._currentRecordId;
+    if (!recordId) return;
+
+    try {
+      const payload = JSON.stringify({
+        recordId,
+        userId: this.auth.currentUser.userId,
+      });
+      const blob = new Blob([payload], { type: 'application/json' });
+      navigator.sendBeacon(RELEASE_ON_UNLOAD_ENDPOINT, blob);
+    } catch {
+      // Unload cleanup is best-effort only.
+    }
+  }
+}

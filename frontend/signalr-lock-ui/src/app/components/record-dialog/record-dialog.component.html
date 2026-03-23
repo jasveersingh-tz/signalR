@@ -1,51 +1,95 @@
-<div
-  class="dialog-backdrop"
-  role="presentation"
-  tabindex="-1"
-  (click)="onBackdropClick($event)"
-  (keydown.escape)="cancel()"
->
-  <section
-    class="dialog-card"
-    role="dialog"
-    aria-modal="true"
-    [attr.aria-label]="record.name"
-    tabindex="0"
-    (click)="$event.stopPropagation()"
-    (keydown)="$event.stopPropagation()"
-  >
-    <header class="dialog-header">
+<section class="dialog-card" role="region" [attr.aria-label]="record.name">
+  <header class="dialog-header">
+    <div>
       <h2>{{ record.name }}</h2>
       <small>{{ record.id }}</small>
-    </header>
+    </div>
+  </header>
 
-    <section *ngIf="showSessionTimeoutPrompt" class="timeout-prompt" role="alertdialog" aria-modal="true" aria-label="Session timed out">
-      <p class="timeout-prompt__title">Session timed out</p>
-      <p class="timeout-prompt__message">{{ sessionTimeoutMessage }}</p>
-      <div class="timeout-prompt__actions">
-        <button type="button" class="btn btn--primary" (click)="acknowledgeSessionTimeout()">OK</button>
-      </div>
-    </section>
+  <!-- ── 1. Session timeout prompt (lock taken / connection lost) ─── -->
+  <section
+    *ngIf="showSessionTimeoutPrompt"
+    class="overlay-prompt overlay-prompt--warn"
+    role="alertdialog"
+    aria-modal="true"
+    aria-label="Session timed out"
+  >
+    <p class="overlay-prompt__title">Session timed out</p>
+    <p class="overlay-prompt__message">{{ sessionTimeoutMessage }}</p>
+    <div class="overlay-prompt__actions">
+      <button type="button" class="btn btn--primary" (click)="acknowledgeSessionTimeout()">OK</button>
+    </div>
+  </section>
 
-    <ng-container *ngIf="!showSessionTimeoutPrompt">
-      <p *ngIf="releaseWarning" class="banner banner--warn">{{ releaseWarning }}</p>
+  <!-- ── 2. Inactivity warning modal (30 min idle while editing) ─── -->
+  <section
+    *ngIf="showInactivityModal"
+    class="overlay-prompt overlay-prompt--inactivity"
+    role="alertdialog"
+    aria-modal="true"
+    aria-label="Inactivity warning"
+  >
+    <p class="overlay-prompt__title">Still there?</p>
+    <p class="overlay-prompt__message">
+      You have been inactive for more than 30 minutes. Would you like to extend your session or release the lock?
+    </p>
+    <p class="overlay-prompt__sub">If no action is taken, the lock will be released automatically in 2-3 minutes.</p>
+    <div class="overlay-prompt__actions">
+      <button type="button" class="btn btn--secondary" (click)="onCloseSession()">Release Lock</button>
+      <button type="button" class="btn btn--primary"   (click)="onExtendSession()">Extend Session</button>
+    </div>
+  </section>
 
+  <!-- ── 3. Transfer request modal (lock HOLDER sees this) ──────── -->
+  <section
+    *ngIf="showTransferRequestModal"
+    class="overlay-prompt overlay-prompt--transfer"
+    role="alertdialog"
+    aria-modal="true"
+    aria-label="Lock transfer request"
+  >
+    <p class="overlay-prompt__title">Access request</p>
+    <p class="overlay-prompt__message">
+      <strong>{{ transferRequesterName }}</strong> wants to edit this record.
+      Would you like to transfer the lock to them?
+    </p>
+    <p class="overlay-prompt__sub">If no response is given within 60 seconds, the request will be rejected automatically.</p>
+    <div class="overlay-prompt__actions">
+      <button type="button" class="btn btn--secondary" (click)="onRejectTransfer()">Reject</button>
+      <button type="button" class="btn btn--primary"   (click)="onApproveTransfer()">Approve</button>
+    </div>
+  </section>
+
+  <!-- ── 4. Normal edit form (not shown while any overlay is active) -->
+  <ng-container *ngIf="!showSessionTimeoutPrompt && !showInactivityModal && !showTransferRequestModal">
+
+    <!-- View-only mode — no lock held by current user -->
+    <ng-container *ngIf="viewOnly">
+      <form [formGroup]="form" class="dialog-form">
+        <label>
+          Name
+          <input type="text" formControlName="name" readonly />
+        </label>
+        <label>
+          Status
+          <input type="text" formControlName="status" readonly />
+        </label>
+      </form>
+    </ng-container>
+
+    <!-- Edit mode — current user holds the lock -->
+    <ng-container *ngIf="!viewOnly">
       <form [formGroup]="form" class="dialog-form">
         <label>
           Name
           <input type="text" formControlName="name" />
         </label>
-
         <label>
           Status
           <input type="text" formControlName="status" />
         </label>
       </form>
-
-      <footer class="dialog-actions">
-        <button type="button" class="btn btn--secondary" (click)="cancel()">Cancel</button>
-        <button type="button" class="btn btn--primary" (click)="save()">Save</button>
-      </footer>
     </ng-container>
-  </section>
-</div>
+
+  </ng-container>
+</section>

@@ -30,6 +30,8 @@ export class RecordsListComponent {
   @Input() error: string | null = null;
   /** ID of the record currently being acquired; that row will be visually dimmed. */
   @Input() pendingAcquireRecordId: string | null = null;
+  /** ID of the record currently shown on the right-side panel. */
+  @Input() selectedRecordId: string | null = null;
 
   @Output() openRecord = new EventEmitter<RecordListItem>();
 

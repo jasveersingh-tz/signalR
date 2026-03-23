@@ -26,6 +26,14 @@
   background: #f7fafe;
 }
 
+.records-table tr.row--selected {
+  background: #e8f1ff;
+}
+
+.records-table tr.row--selected td {
+  border-bottom-color: #c8dbf6;
+}
+
 .lock-icon {
   display: inline-flex;
   align-items: center;

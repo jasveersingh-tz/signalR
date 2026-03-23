@@ -122,6 +122,142 @@ public class RecordLockHub : Hub
         }
     }
 
+    // ─── Lock transfer ─────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Request a lock transfer: notify the current holder that this user wants to edit.
+    /// Server sends <c>lockTransferRequested</c> to the holder, or <c>lockTransferCooldown</c>
+    /// if a rejection cooldown is still active.
+    /// </summary>
+    public async Task RequestLockTransfer(string recordId, string requestingUserId, string requestingDisplayName)
+    {
+        if (string.IsNullOrWhiteSpace(recordId) || string.IsNullOrWhiteSpace(requestingUserId))
+        {
+            await Clients.Caller.SendAsync("error", "recordId and requestingUserId are required.");
+            return;
+        }
+
+        // Check cooldown first
+        var (cooldownActive, remainingSeconds) = _lockStore.IsTransferCooldownActive(recordId);
+        if (cooldownActive)
+        {
+            await Clients.Caller.SendAsync("lockTransferCooldown", recordId, remainingSeconds);
+            return;
+        }
+
+        // Verify the lock exists
+        var currentLock = _lockStore.GetLock(recordId);
+        if (currentLock == null)
+        {
+            // Lock expired or already released — let the requester try a direct acquire
+            await Clients.Caller.SendAsync("lockTransferExpired", recordId);
+            return;
+        }
+
+        if (currentLock.LockedByUserId == requestingUserId)
+        {
+            await Clients.Caller.SendAsync("error", "You already hold the lock on this record.");
+            return;
+        }
+
+        // Store the request
+        var (stored, inCooldown) = _lockStore.TrySetTransferRequest(
+            recordId, requestingUserId, requestingDisplayName, Context.ConnectionId);
+
+        if (!stored)
+        {
+            if (inCooldown)
+            {
+                var (_, remaining) = _lockStore.IsTransferCooldownActive(recordId);
+                await Clients.Caller.SendAsync("lockTransferCooldown", recordId, remaining);
+            }
+            // else: another request is already pending — silently ignore duplicate
+            return;
+        }
+
+        _logger.LogInformation("LockTransferRequested: record={RecordId} requester={UserId} holder={HolderId}",
+            recordId, requestingUserId, currentLock.LockedByUserId);
+
+        // Notify the lock holder directly
+        await Clients.Client(currentLock.ConnectionId)
+            .SendAsync("lockTransferRequested", recordId, requestingUserId, requestingDisplayName);
+    }
+
+    /// <summary>
+    /// Lock holder approves the transfer: releases own lock and tells the requester to acquire.
+    /// </summary>
+    public async Task ApproveLockTransfer(string recordId)
+    {
+        if (string.IsNullOrWhiteSpace(recordId))
+        {
+            await Clients.Caller.SendAsync("error", "recordId is required.");
+            return;
+        }
+
+        var currentLock = _lockStore.GetLock(recordId);
+        if (currentLock == null || currentLock.ConnectionId != Context.ConnectionId)
+        {
+            await Clients.Caller.SendAsync("error", "You do not hold the lock on this record.");
+            return;
+        }
+
+        var request = _lockStore.GetTransferRequest(recordId);
+        if (request == null)
+        {
+            await Clients.Caller.SendAsync("error", "No pending transfer request for this record.");
+            return;
+        }
+
+        // Release holder's lock and clear the request
+        _lockStore.TryRelease(recordId, Context.ConnectionId);
+        _lockStore.ClearTransferRequest(recordId);
+
+        _logger.LogInformation("LockTransferApproved: record={RecordId} by={HolderId} to={RequesterId}",
+            recordId, currentLock.LockedByUserId, request.RequestingUserId);
+
+        // Broadcast release so all watchers update their UI
+        await Clients.Group(RecordGroup(recordId)).SendAsync("lockReleased", recordId);
+
+        // Tell the requester the lock is now free for them to grab
+        await Clients.Client(request.RequestingConnectionId)
+            .SendAsync("lockTransferApproved", recordId);
+    }
+
+    /// <summary>
+    /// Lock holder rejects the transfer request and activates a 5-minute cooldown so the
+    /// same record cannot be requested again immediately.
+    /// </summary>
+    public async Task RejectLockTransfer(string recordId)
+    {
+        if (string.IsNullOrWhiteSpace(recordId))
+        {
+            await Clients.Caller.SendAsync("error", "recordId is required.");
+            return;
+        }
+
+        var currentLock = _lockStore.GetLock(recordId);
+        if (currentLock == null || currentLock.ConnectionId != Context.ConnectionId)
+        {
+            await Clients.Caller.SendAsync("error", "You do not hold the lock on this record.");
+            return;
+        }
+
+        var request = _lockStore.GetTransferRequest(recordId);
+        if (request == null)
+            return; // No pending request — nothing to reject
+
+        // 5-minute cooldown blocks all users from requesting transfer on this record
+        _lockStore.SetTransferCooldown(recordId, 300_000);
+        _lockStore.ClearTransferRequest(recordId);
+
+        _logger.LogInformation("LockTransferRejected: record={RecordId} by={HolderId}, 5-min cooldown set",
+            recordId, currentLock.LockedByUserId);
+
+        // Notify the requester
+        await Clients.Client(request.RequestingConnectionId)
+            .SendAsync("lockTransferRejected", recordId);
+    }
+
     // ─── Lifecycle ────────────────────────────────────────────────────────────
 
     public override Task OnConnectedAsync()
