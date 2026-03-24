@@ -14,7 +14,7 @@
  *  8. Reconnect transparently — re-subscribes to all hub groups on reconnect.
  */
 
-import { Injectable, OnDestroy } from '@angular/core';
+import { Injectable, NgZone, OnDestroy } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import * as signalR from '@microsoft/signalr';
 import {
@@ -30,11 +30,11 @@ import { RecordsService } from './records.service';
 // ── Configuration constants ────────────────────────────────────────
 const HUB_URL = '/hubs/recordLock';
 const HEARTBEAT_INTERVAL_MS  = 30_000;       // ping the server every 30 s to keep the lock alive
-const INACTIVITY_WARNING_MS  = 60_000;  // show inactivity modal after 30 min of no activity
+const INACTIVITY_WARNING_MS  = 10_000;       // show inactivity modal after 10 sec of no activity (for testing)
 const ACQUIRE_TIMEOUT_MS     = 2_500;        // max wait for hub response after AcquireLock invoke
 const CONNECT_TIMEOUT_MS     = 5_000;        // max wait for initial hub connection
 const REFRESH_DEBOUNCE_MS    = 300;          // collapse rapid lock events before refreshing the list
-const RELEASE_ON_UNLOAD_ENDPOINT = '/api/locks/release-on-unload';
+const UNLOAD_RELEASE_TIMEOUT = 1_000;        // max wait for unload lock release (ms)
 
 // Events on the document that reset the inactivity countdown
 const ACTIVITY_EVENTS = ['mousemove', 'keydown', 'click', 'touchstart'] as const;
@@ -115,10 +115,11 @@ export class LockService implements OnDestroy {
     private readonly http: HttpClient,
     private readonly auth: MockAuth,
     private readonly recordsService: RecordsService,
+    private readonly _zone: NgZone,
   ) {
     this._refreshTrigger$
       .pipe(debounceTime(REFRESH_DEBOUNCE_MS))
-      .subscribe(() => void this.recordsService.refresh(10));
+      .subscribe(() => this._zone.run(() => void this.recordsService.refresh(10)));
 
     // Browser refresh/close can tear down SignalR before async release invokes finish.
     window.addEventListener('pagehide', this._releaseOnUnloadHandler);
@@ -149,9 +150,8 @@ export class LockService implements OnDestroy {
     this._connection.onreconnecting(() => this._connectionLost$.next(true));
     this._connection.onreconnected(async () => {
       this._connectionLost$.next(false);
-      if (this._subscribedRecordIds.size > 0) {
-        await this._connection!.invoke('SubscribeToRecords', Array.from(this._subscribedRecordIds));
-      }
+      // Re-subscribe to all locks on reconnect
+      await this._connection!.invoke('SubscribeToAllLocks');
       this._triggerRefresh();
     });
 
@@ -160,6 +160,9 @@ export class LockService implements OnDestroy {
     );
     await Promise.race([this._connection.start(), connectTimeout]);
     this._connectionLost$.next(false);
+
+    // Subscribe to all lock updates (backend broadcasts to this group)
+    await this._connection.invoke('SubscribeToAllLocks');
   }
 
   // ── Subscription ─────────────────────────────────────────────────
@@ -182,16 +185,13 @@ export class LockService implements OnDestroy {
     }
 
     await this.ensureConnected();
-    this._subscribedRecordIds.add(recordId);
-    await this._connection!.invoke('SubscribeToRecords', [recordId]);
+    // Backend broadcasts all locks to SubscribeToAllLocks group, so just ensure connected
   }
 
   async subscribeToRecords(recordIds: string[]): Promise<void> {
     if (!recordIds.length) return;
-    const normalized = [...new Set(recordIds.filter((id) => id.trim()))];
-    normalized.forEach((id) => this._subscribedRecordIds.add(id));
     await this.ensureConnected();
-    await this._connection!.invoke('SubscribeToRecords', normalized);
+    // Backend broadcasts all locks to SubscribeToAllLocks group
   }
 
   async getLockInfo(recordId: string): Promise<LockInfo | null> {
@@ -277,25 +277,25 @@ export class LockService implements OnDestroy {
   async requestLockTransfer(recordId: string): Promise<void> {
     await this.ensureConnected();
     const { userId, displayName } = this.auth.currentUser;
-    await this._connection!.invoke('RequestLockTransfer', recordId, userId, displayName);
+    await this._connection!.invoke('RequestAccess', recordId, userId, displayName);
   }
 
   /**
    * Called by the lock holder to approve a pending transfer request.
    * The holder's lock is released server-side; the requester gets `lockTransferApproved`.
    */
-  async approveLockTransfer(recordId: string): Promise<void> {
+  async approveLockTransfer(recordId: string, requesterUserId: string, requesterDisplayName: string, requesterConnectionId: string): Promise<void> {
     await this.ensureConnected();
-    await this._connection!.invoke('ApproveLockTransfer', recordId);
+    await this._connection!.invoke('AcceptAccessRequest', recordId, requesterUserId, requesterDisplayName, requesterConnectionId);
   }
 
   /**
    * Called by the lock holder to reject a pending transfer request.
-   * Sets a 5-minute cooldown on the record; the requester gets `lockTransferRejected`.
+   * The requester gets `lockTransferRejected`.
    */
-  async rejectLockTransfer(recordId: string): Promise<void> {
+  async rejectLockTransfer(recordId: string, requesterConnectionId: string): Promise<void> {
     await this.ensureConnected();
-    await this._connection!.invoke('RejectLockTransfer', recordId);
+    await this._connection!.invoke('RejectAccessRequest', recordId, requesterConnectionId);
   }
 
   // ── Heartbeat ────────────────────────────────────────────────────
@@ -358,76 +358,89 @@ export class LockService implements OnDestroy {
 
     // ── lockAcquired ──────────────────────────────────────────────
     this._connection.on('lockAcquired', (recordId: string, lock: LockInfo) => {
-      this.recordsService.patchLock(recordId, {
-        isLocked: true,
-        lockedByDisplayName: lock.lockedByDisplayName,
-        lockedAtUtc: lock.acquiredAtUtc,
-      });
-      this._triggerRefresh();
+      this._zone.run(() => {
+        this.recordsService.patchLock(recordId, {
+          isLocked: true,
+          lockedByDisplayName: lock.lockedByDisplayName,
+          lockedAtUtc: lock.acquiredAtUtc,
+        });
 
-      if (recordId === this._currentRecordId) {
-        if (lock.lockedByUserId === this.auth.currentUser.userId) {
-          this._lockState$.next({ status: 'owned', lock });
-          this._resetInactivityTimer();
-        } else {
-          this._lockState$.next({ status: 'locked-by-other', lock });
+        if (recordId === this._currentRecordId) {
+          if (lock.lockedByUserId === this.auth.currentUser.userId) {
+            this._lockState$.next({ status: 'owned', lock });
+            this._resetInactivityTimer();
+          } else {
+            this._lockState$.next({ status: 'locked-by-other', lock });
+          }
         }
-      }
+      });
     });
 
     // ── lockRejected ──────────────────────────────────────────────
     this._connection.on('lockRejected', (recordId: string, lock: LockInfo) => {
-      if (recordId === this._currentRecordId) {
-        this._lockState$.next({ status: 'locked-by-other', lock });
-      }
+      this._zone.run(() => {
+        if (recordId === this._currentRecordId) {
+          this._lockState$.next({ status: 'locked-by-other', lock });
+        }
+      });
     });
 
     // ── lockReleased ──────────────────────────────────────────────
     this._connection.on('lockReleased', (recordId: string) => {
-      this.recordsService.patchLock(recordId, {
-        isLocked: false,
-        lockedByDisplayName: undefined,
-        lockedAtUtc: undefined,
-      });
-      this._triggerRefresh();
+      this._zone.run(() => {
+        this.recordsService.patchLock(recordId, {
+          isLocked: false,
+          lockedByDisplayName: undefined,
+          lockedAtUtc: undefined,
+        });
 
-      if (recordId === this._currentRecordId) {
-        this._lockState$.next({ status: 'unlocked' });
-        this._stopInactivityTimer();
-      }
+        if (recordId === this._currentRecordId) {
+          this._lockState$.next({ status: 'unlocked' });
+          this._stopInactivityTimer();
+        }
+      });
     });
 
     // ── error ─────────────────────────────────────────────────────
     this._connection.on('error', (message: string) => {
-      console.error('[LockService] Hub error:', message);
+      this._zone.run(() => {
+        console.error('[LockService] Hub error:', message);
+      });
     });
 
     // ── lockTransferRequested (holder receives) ───────────────────
     this._connection.on(
-      'lockTransferRequested',
-      (recordId: string, requestingUserId: string, requestingDisplayName: string) => {
-        this._lockTransferRequested$.next({ recordId, requestingUserId, requestingDisplayName });
+      'lockRequested',
+      (payload: { recordId: string; requesterId: string; requesterDisplayName: string; requesterConnectionId: string }) => {
+        this._zone.run(() => {
+          this._lockTransferRequested$.next({
+            recordId: payload.recordId,
+            requestingUserId: payload.requesterId,
+            requestingDisplayName: payload.requesterDisplayName,
+            requesterConnectionId: payload.requesterConnectionId,
+          });
+        });
       },
     );
 
     // ── lockTransferApproved (requester receives) ─────────────────
     this._connection.on('lockTransferApproved', (recordId: string) => {
-      this._lockTransferApproved$.next(recordId);
+      this._zone.run(() => this._lockTransferApproved$.next(recordId));
     });
 
     // ── lockTransferRejected (requester receives) ─────────────────
     this._connection.on('lockTransferRejected', (recordId: string) => {
-      this._lockTransferRejected$.next(recordId);
+      this._zone.run(() => this._lockTransferRejected$.next(recordId));
     });
 
     // ── lockTransferCooldown (requester receives) ─────────────────
     this._connection.on('lockTransferCooldown', (recordId: string, remainingSeconds: number) => {
-      this._lockTransferCooldown$.next({ recordId, remainingSeconds });
+      this._zone.run(() => this._lockTransferCooldown$.next({ recordId, remainingSeconds }));
     });
 
     // ── lockTransferExpired ───────────────────────────────────────
     this._connection.on('lockTransferExpired', (recordId: string) => {
-      this._lockTransferExpired$.next(recordId);
+      this._zone.run(() => this._lockTransferExpired$.next(recordId));
     });
   }
 
@@ -474,6 +487,8 @@ export class LockService implements OnDestroy {
   }
 
   private _releaseLockOnUnload(): void {
+    this._stopHeartbeat();
+    
     const current = this._lockState$.value;
     if (current.status !== 'owned') return;
 
@@ -481,14 +496,32 @@ export class LockService implements OnDestroy {
     if (!recordId) return;
 
     try {
-      const payload = JSON.stringify({
-        recordId,
-        userId: this.auth.currentUser.userId,
-      });
-      const blob = new Blob([payload], { type: 'application/json' });
-      navigator.sendBeacon(RELEASE_ON_UNLOAD_ENDPOINT, blob);
-    } catch {
-      // Unload cleanup is best-effort only.
+      // Attempt to release the lock via SignalR if connected
+      if (this._connection?.state === signalR.HubConnectionState.Connected) {
+        console.log('[LockService] Releasing lock on page unload:', recordId);
+        // Send the release and wait briefly for it to complete
+        this._connection.invoke('ReleaseLock', recordId)
+          .then(() => {
+            console.log('[LockService] Lock released successfully on unload:', recordId);
+            // Stop connection after release
+            void this._connection?.stop();
+          })
+          .catch((err) => {
+            console.warn('[LockService] Error releasing lock on unload:', err);
+            // Still try to stop the connection
+            void this._connection?.stop();
+          });
+        
+        // Set a timeout fallback to stop the connection even if release fails
+        setTimeout(() => {
+          if (this._connection?.state === signalR.HubConnectionState.Connected) {
+            console.log('[LockService] Force-stopping connection after unload timeout');
+            void this._connection.stop();
+          }
+        }, UNLOAD_RELEASE_TIMEOUT);
+      }
+    } catch (err) {
+      console.error('[LockService] Unload cleanup error:', err);
     }
   }
 }

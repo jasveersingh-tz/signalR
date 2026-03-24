@@ -21,7 +21,7 @@
     </div>
   </section>
 
-  <!-- ── 2. Inactivity warning modal (30 min idle while editing) ─── -->
+  <!-- ── 2. Inactivity warning modal (10 sec idle while editing) ─── -->
   <section
     *ngIf="showInactivityModal"
     class="overlay-prompt overlay-prompt--inactivity"
@@ -31,9 +31,9 @@
   >
     <p class="overlay-prompt__title">Still there?</p>
     <p class="overlay-prompt__message">
-      You have been inactive for more than 30 minutes. Would you like to extend your session or release the lock?
+      You have been inactive for more than 10 seconds. Would you like to extend your session or release the lock?
     </p>
-    <p class="overlay-prompt__sub">If no action is taken, the lock will be released automatically in 2-3 minutes.</p>
+    <p class="overlay-prompt__sub">If no action is taken, the lock will be released automatically in 5 seconds.</p>
     <div class="overlay-prompt__actions">
       <button type="button" class="btn btn--secondary" (click)="onCloseSession()">Release Lock</button>
       <button type="button" class="btn btn--primary"   (click)="onExtendSession()">Extend Session</button>

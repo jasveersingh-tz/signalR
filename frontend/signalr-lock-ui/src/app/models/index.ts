@@ -35,6 +35,7 @@ export interface LockTransferInfo {
   recordId: string;
   requestingUserId: string;
   requestingDisplayName: string;
+  requesterConnectionId: string;
 }
 
 // ── Records list ──────────────────────────────────────────────────

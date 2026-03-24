@@ -6,7 +6,8 @@
     </div>
   </header>
 
-  <main class="app-content">
+  <!-- ── Banners and Actions (always visible at top) ──────────────────── -->
+  <section class="app-banners" *ngIf="bannerMessage || connectionLost">
     <div
       *ngIf="bannerMessage"
       class="banner"
@@ -27,6 +28,13 @@
       </button>
     </div>
 
+    <!-- Connection lost indicator -->
+    <div *ngIf="connectionLost" class="banner banner--warn" role="status">
+      <span>⚠ Connection lost. Attempting to reconnect...</span>
+    </div>
+  </section>
+
+  <main class="app-content">
     <section class="workspace-layout">
       <div class="workspace-layout__list">
         <app-records-list

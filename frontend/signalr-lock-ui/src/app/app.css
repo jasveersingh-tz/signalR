@@ -1,6 +1,8 @@
 .app-shell {
   min-height: 100vh;
   background: #f4f6f9;
+  display: flex;
+  flex-direction: column;
 }
 
 .app-header {
@@ -12,6 +14,7 @@
   align-items: center;
   flex-wrap: wrap;
   gap: 0.5rem;
+  flex-shrink: 0;
 }
 
 .app-header h1 {
@@ -25,8 +28,24 @@
   opacity: 0.9;
 }
 
+/* ── Banners section (always at top, sticky) ─────────────────────── */
+.app-banners {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  padding: 0.5rem 1rem;
+  background: #f4f6f9;
+  border-bottom: 1px solid #e2e8f0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
 .app-content {
   padding: 1rem;
+  flex: 1;
+  overflow: auto;
 }
 
 .workspace-layout {

@@ -46,7 +46,7 @@ export interface PageBannerEvent {
   tone?: 'info' | 'warn' | 'error' | 'success';
 }
 
-const MODAL_AUTO_RELEASE_MS = 2.5 * 60_000; // 2.5 min of modal inactivity → auto-release
+const MODAL_AUTO_RELEASE_MS = 5_000;          // 5 sec of modal inactivity → auto-release (for testing)
 const TRANSFER_AUTO_REJECT_MS = 60_000;      // 60 s then auto-reject if holder ignores
 
 const SESSION_TIMEOUT_MESSAGES = {
@@ -101,6 +101,7 @@ export class RecordDialogComponent implements OnInit, OnChanges, OnDestroy {
   /** Status shown in view-only mode while waiting for holder's response. */
   viewOnlyStatus: 'idle' | 'pending' | 'rejected' | 'cooldown' = 'idle';
   cooldownRemainingSeconds = 0;
+  private _transferRequesterConnectionId = '';
 
   constructor(
     private readonly _fb: FormBuilder,
@@ -214,7 +215,7 @@ export class RecordDialogComponent implements OnInit, OnChanges, OnDestroy {
   async onApproveTransfer(): Promise<void> {
     this._clearTransferAutoRejectTimer();
     this.showTransferRequestModal = false;
-    await this._lockService.approveLockTransfer(this.record.id);
+    await this._lockService.approveLockTransfer(this.record.id, this.transferRequesterUserId, this.transferRequesterName, this._transferRequesterConnectionId);
 
     // After approval, the hub releases our lock server-side.
     // The `lockReleased` event will propagate through `lockState$` and trigger the
@@ -226,7 +227,7 @@ export class RecordDialogComponent implements OnInit, OnChanges, OnDestroy {
   async onRejectTransfer(): Promise<void> {
     this._clearTransferAutoRejectTimer();
     this.showTransferRequestModal = false;
-    await this._lockService.rejectLockTransfer(this.record.id);
+    await this._lockService.rejectLockTransfer(this.record.id, this._transferRequesterConnectionId);
   }
 
   // ── View-only mode actions ────────────────────────────────────────
@@ -267,7 +268,7 @@ export class RecordDialogComponent implements OnInit, OnChanges, OnDestroy {
         filter((req) => req.recordId === this.record.id),
         takeUntil(this._destroy$),
       )
-      .subscribe((req) => this._showTransferRequestModal(req.requestingUserId, req.requestingDisplayName));
+      .subscribe((req) => this._showTransferRequestModal(req.requestingUserId, req.requestingDisplayName, req.requesterConnectionId));
   }
 
   private _initViewOnlyMode(): void {
@@ -366,10 +367,11 @@ export class RecordDialogComponent implements OnInit, OnChanges, OnDestroy {
     }
   }
 
-  private _showTransferRequestModal(userId: string, displayName: string): void {
+  private _showTransferRequestModal(userId: string, displayName: string, connectionId: string): void {
     if (this._closing) return;
     this.transferRequesterUserId = userId;
     this.transferRequesterName = displayName;
+    this._transferRequesterConnectionId = connectionId;
     this.showTransferRequestModal = true;
     // Auto-reject if holder ignores it for 60 seconds
     this._transferAutoRejectTimer = setTimeout(() => {
