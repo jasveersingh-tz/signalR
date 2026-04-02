@@ -52,7 +52,7 @@ export class RecordEditor implements OnInit, OnChanges, OnDestroy {
     });
 
     this._populateFormFromMockData();
-    await this.lockService.subscribeToRecord(this.recordId);
+    await this.lockService.subscribeToRecord(this.recordId, "ARPO");
     await this.openEdit();
   }
 
@@ -73,7 +73,7 @@ export class RecordEditor implements OnInit, OnChanges, OnDestroy {
     this.isSaving = false;
     this._populateFormFromMockData();
 
-    await this.lockService.subscribeToRecord(this.recordId);
+    await this.lockService.subscribeToRecord(this.recordId, "ARPO");
     await this.openEdit();
   }
 

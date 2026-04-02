@@ -10,9 +10,9 @@ import {
 import { LockInfo, LockState } from '../models/lock.model';
 import { MockAuth } from './mock-auth';
 
-const HUB_URL = '/hubs/recordLock';
+const HUB_BASE_URL = '/hubs/locks';
 const HEARTBEAT_INTERVAL_MS = 30_000;
-const INACTIVITY_TIMEOUT_MS = 300_000; // 1 minute
+const INACTIVITY_TIMEOUT_MS = 300_000;
 
 @Injectable({ providedIn: 'root' })
 export class LockService implements OnDestroy {
@@ -23,6 +23,7 @@ export class LockService implements OnDestroy {
   private _inactivityTimer: ReturnType<typeof setTimeout> | null = null;
   private _currentRecordId: string | null = null;
   private _lastActivityTime: number = Date.now();
+  private _featureKey: string = 'default';
 
   private _allLocks$ = new BehaviorSubject<Map<string, LockInfo>>(new Map());
 
@@ -36,16 +37,26 @@ export class LockService implements OnDestroy {
 
   // ── Connection ──────────────────────────────────────────────────────────────
 
-  private async ensureConnected(): Promise<void> {
+  private async ensureConnected(featureKey: string): Promise<void> {
+    // If already connected with the same featureKey, nothing to do
     if (
       this._connection &&
-      this._connection.state === signalR.HubConnectionState.Connected
+      this._connection.state === signalR.HubConnectionState.Connected &&
+      this._featureKey === featureKey
     ) {
       return;
     }
 
+    // featureKey changed or no connection — stop the old one first
+    if (this._connection) {
+      await this._connection.stop();
+      this._connection = null;
+    }
+
+    this._featureKey = featureKey;
+
     this._connection = new signalR.HubConnectionBuilder()
-      .withUrl(HUB_URL)
+      .withUrl(`${HUB_BASE_URL}?feature=${encodeURIComponent(featureKey)}`)
       .withAutomaticReconnect()
       .configureLogging(signalR.LogLevel.Information)
       .build();
@@ -54,7 +65,6 @@ export class LockService implements OnDestroy {
 
     this._connection.onreconnected(async () => {
       console.log('[LockService] Reconnected.');
-      // Re-assert lock and restart heartbeat if we had one
       if (this._lockState$.value.status === 'owned') {
         const state = this._lockState$.value;
         await this._connection!.invoke(
@@ -73,27 +83,30 @@ export class LockService implements OnDestroy {
   // ── Public API ──────────────────────────────────────────────────────────────
 
   /**
-   * Bootstrap lock state from REST, then subscribe to the hub.
+   * Bootstrap lock state from REST, then connect to the hub for this feature.
    * Call this when an edit view initialises.
+   * @param recordId  The record being opened for editing.
+   * @param featureKey  The feature this screen belongs to (e.g. 'purchase-orders').
+   *                    Defaults to 'default' so existing call sites require no change.
    */
-  async subscribeToRecord(recordId: string): Promise<void> {
+  async subscribeToRecord(recordId: string, featureKey = 'default'): Promise<void> {
     this._stopHeartbeat();
     this._stopInactivityTimer();
 
     this._currentRecordId = recordId;
     this._lockState$.next({ status: 'unlocked' });
 
-    // Re-register hub handlers so the currentRecordId filter is up-to-date
     if (this._connection) {
       this._registerHubHandlers();
     }
 
-    // Bootstrap current state via REST (handles page-refresh scenario)
+    // Bootstrap current state via REST before the hub connection is open
     try {
       const existing = await firstValueFrom(
-        this.http.get<LockInfo | null>(`/api/locks/${recordId}`, {
-          observe: 'body',
-        }),
+        this.http.get<LockInfo | null>(
+          `/api/locks/${recordId}?feature=${encodeURIComponent(featureKey)}`,
+          { observe: 'body' },
+        ),
       ).catch(() => null);
 
       if (existing) {
@@ -103,17 +116,22 @@ export class LockService implements OnDestroy {
       // Non-critical — hub events will correct state
     }
 
-    await this.ensureConnected();
+    await this.ensureConnected(featureKey);
   }
 
-  /** Subscribe to lock changes for all records. Used by the list view. */
-  async subscribeToAllLocks(): Promise<void> {
-    await this.ensureConnected();
+  /**
+   * Subscribe to lock changes for all records in a feature. Used by list views.
+   * @param featureKey  The feature this screen belongs to. Defaults to 'default'.
+   */
+  async subscribeToAllLocks(featureKey = 'default'): Promise<void> {
+    await this.ensureConnected(featureKey);
     await this._connection!.invoke('SubscribeToAllLocks');
 
     try {
       const locks = await firstValueFrom(
-        this.http.get<LockInfo[]>('/api/locks'),
+        this.http.get<LockInfo[]>(
+          `/api/locks?feature=${encodeURIComponent(featureKey)}`,
+        ),
       ).catch(() => [] as LockInfo[]);
 
       const map = new Map<string, LockInfo>();
@@ -132,9 +150,8 @@ export class LockService implements OnDestroy {
     userId: string,
     displayName: string,
   ): Promise<void> {
-    await this.ensureConnected();
+    await this.ensureConnected(this._featureKey);
     await this._connection!.invoke('AcquireLock', recordId, userId, displayName);
-    // Start inactivity monitoring when lock acquired
     this._setupActivityListeners();
     this._resetInactivityTimer();
   }
@@ -155,7 +172,7 @@ export class LockService implements OnDestroy {
 
   /** Admin: force-release any lock on a record. */
   async forceRelease(recordId: string): Promise<void> {
-    await this.ensureConnected();
+    await this.ensureConnected(this._featureKey);
     await this._connection!.invoke('ForceRelease', recordId);
   }
 
@@ -175,7 +192,6 @@ export class LockService implements OnDestroy {
   private _registerHubHandlers(): void {
     if (!this._connection) return;
 
-    // Remove stale handlers before re-registering (safe on fresh connections too)
     this._connection.off('lockAcquired');
     this._connection.off('lockRejected');
     this._connection.off('lockReleased');
@@ -192,7 +208,6 @@ export class LockService implements OnDestroy {
               : { status: 'locked-by-other', lock },
           );
         }
-        // Update global locks map
         const acquireMap = new Map(this._allLocks$.value);
         acquireMap.set(recordId, lock);
         this._allLocks$.next(acquireMap);
@@ -204,7 +219,6 @@ export class LockService implements OnDestroy {
         if (recordId === this._currentRecordId) {
           this._lockState$.next({ status: 'locked-by-other', lock });
         }
-        // Update global locks map (someone else holds it)
         const rejectMap = new Map(this._allLocks$.value);
         rejectMap.set(recordId, lock);
         this._allLocks$.next(rejectMap);
@@ -216,7 +230,6 @@ export class LockService implements OnDestroy {
         if (recordId === this._currentRecordId) {
           this._lockState$.next({ status: 'unlocked' });
         }
-        // Update global locks map
         const releaseMap = new Map(this._allLocks$.value);
         releaseMap.delete(recordId);
         this._allLocks$.next(releaseMap);
@@ -254,7 +267,6 @@ export class LockService implements OnDestroy {
     this._connection?.stop();
   }
 
-  /** Track user activity (keyboard, mouse, etc.) */
   private _setupActivityListeners(): void {
     const resetInactivityTimer = () => {
       this._lastActivityTime = Date.now();
@@ -272,16 +284,11 @@ export class LockService implements OnDestroy {
       clearTimeout(this._inactivityTimer);
     }
 
-    // Only set timer if we currently own the lock
     if (this._lockState$.value.status === 'owned') {
       this._inactivityTimer = setTimeout(async () => {
-        console.warn(
-          '[LockService] User inactive for 5 minutes. Auto-releasing lock.'
-        );
+        console.warn('[LockService] User inactive. Auto-releasing lock.');
         await this.releaseLock(this._currentRecordId!);
-        // Optionally notify user
       }, INACTIVITY_TIMEOUT_MS);
     }
   }
 }
-

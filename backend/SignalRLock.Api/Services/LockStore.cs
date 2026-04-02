@@ -23,30 +23,30 @@ public interface ILockStore
     /// Returns (false, existingLock) if held by someone else.
     /// <paramref name="lockTtl"/> comes from the feature handler's options.
     /// </summary>
-    (bool Acquired, LockInfo? Lock) TryAcquire(
+    Task<(bool Acquired, LockInfo? Lock)> TryAcquireAsync(
         string featureKey, string recordId, string userId, string displayName,
         string connectionId, TimeSpan lockTtl);
 
     /// <summary>Release a lock owned by the given connection.</summary>
-    bool TryRelease(string featureKey, string recordId, string connectionId);
+    Task<bool> TryReleaseAsync(string featureKey, string recordId, string connectionId);
 
     /// <summary>Force-release any lock on the record regardless of owner (admin action).</summary>
-    LockInfo? ForceRelease(string featureKey, string recordId);
+    Task<LockInfo?> ForceReleaseAsync(string featureKey, string recordId);
 
     /// <summary>Refresh the TTL for an existing lock (heartbeat).</summary>
-    bool TryHeartbeat(string featureKey, string recordId, string connectionId, TimeSpan lockTtl);
+    Task<bool> TryHeartbeatAsync(string featureKey, string recordId, string connectionId, TimeSpan lockTtl);
 
     /// <summary>Get the current lock, or null if not locked / expired.</summary>
-    LockInfo? GetLock(string featureKey, string recordId);
+    Task<LockInfo?> GetLockAsync(string featureKey, string recordId);
 
     /// <summary>Return all record IDs currently locked by a given connection under this feature.</summary>
-    IReadOnlyList<string> GetRecordsLockedByConnection(string featureKey, string connectionId);
+    Task<IReadOnlyList<string>> GetRecordsLockedByConnectionAsync(string featureKey, string connectionId);
 
     /// <summary>Release all locks held by a connection under this feature (called after grace period).</summary>
-    IReadOnlyList<LockInfo> ReleaseAllByConnection(string featureKey, string connectionId);
+    Task<IReadOnlyList<LockInfo>> ReleaseAllByConnectionAsync(string featureKey, string connectionId);
 
     /// <summary>Return all currently active locks for a feature (used by REST bootstrap).</summary>
-    IReadOnlyList<LockInfo> GetAllLocks(string featureKey);
+    Task<IReadOnlyList<LockInfo>> GetAllLocksAsync(string featureKey);
 }
 
 public class RedisLockStore(
@@ -63,7 +63,7 @@ public class RedisLockStore(
     private const string LockKeyPrefix = "lock";
     private const string ConnectionLockKeyPrefix = "connection-locks";
 
-    public (bool Acquired, LockInfo? Lock) TryAcquire(
+    public async Task<(bool Acquired, LockInfo? Lock)> TryAcquireAsync(
         string featureKey, string recordId, string userId, string displayName,
         string connectionId, TimeSpan lockTtl)
     {
@@ -71,7 +71,7 @@ public class RedisLockStore(
         var connectionLocksKey = GetConnectionLocksKey(featureKey, connectionId);
         var now = DateTime.UtcNow;
 
-        var existingValue = _db.StringGet(lockKey);
+        var existingValue = await _db.StringGetAsync(lockKey);
 
         if (existingValue.HasValue)
         {
@@ -85,8 +85,8 @@ public class RedisLockStore(
                     ExpiresAtUtc = now + lockTtl,
                     ConnectionId = connectionId
                 };
-                _db.StringSet(lockKey, JsonSerializer.Serialize(refreshed), lockTtl);
-                _db.SetAdd(connectionLocksKey, recordId);
+                await _db.StringSetAsync(lockKey, JsonSerializer.Serialize(refreshed), lockTtl);
+                await _db.SetAddAsync(connectionLocksKey, recordId);
                 _logger.LogInformation(
                     "Lock refreshed: feature={Feature} record={RecordId} user={UserId}",
                     featureKey, recordId, userId);
@@ -106,26 +106,26 @@ public class RedisLockStore(
             ConnectionId = connectionId
         };
 
-        _db.StringSet(lockKey, JsonSerializer.Serialize(newLock), lockTtl);
-        _db.SetAdd(connectionLocksKey, recordId);
+        await _db.StringSetAsync(lockKey, JsonSerializer.Serialize(newLock), lockTtl);
+        await _db.SetAddAsync(connectionLocksKey, recordId);
         _logger.LogInformation(
             "Lock acquired: feature={Feature} record={RecordId} user={UserId}",
             featureKey, recordId, userId);
         return (true, newLock);
     }
 
-    public bool TryRelease(string featureKey, string recordId, string connectionId)
+    public async Task<bool> TryReleaseAsync(string featureKey, string recordId, string connectionId)
     {
         var lockKey = GetLockKey(featureKey, recordId);
-        var existingValue = _db.StringGet(lockKey);
+        var existingValue = await _db.StringGetAsync(lockKey);
 
         if (existingValue.HasValue)
         {
             var existingLock = JsonSerializer.Deserialize<LockInfo>(existingValue.ToString());
             if (existingLock?.ConnectionId == connectionId)
             {
-                _db.KeyDelete(lockKey);
-                _db.SetRemove(GetConnectionLocksKey(featureKey, connectionId), recordId);
+                await _db.KeyDeleteAsync(lockKey);
+                await _db.SetRemoveAsync(GetConnectionLocksKey(featureKey, connectionId), recordId);
                 _logger.LogInformation(
                     "Lock released: feature={Feature} record={RecordId} conn={ConnectionId}",
                     featureKey, recordId, connectionId);
@@ -135,17 +135,17 @@ public class RedisLockStore(
         return false;
     }
 
-    public LockInfo? ForceRelease(string featureKey, string recordId)
+    public async Task<LockInfo?> ForceReleaseAsync(string featureKey, string recordId)
     {
         var lockKey = GetLockKey(featureKey, recordId);
-        var existingValue = _db.StringGet(lockKey);
+        var existingValue = await _db.StringGetAsync(lockKey);
 
         if (existingValue.HasValue)
         {
             var existingLock = JsonSerializer.Deserialize<LockInfo>(existingValue.ToString());
-            _db.KeyDelete(lockKey);
+            await _db.KeyDeleteAsync(lockKey);
             if (existingLock != null)
-                _db.SetRemove(GetConnectionLocksKey(featureKey, existingLock.ConnectionId), recordId);
+                await _db.SetRemoveAsync(GetConnectionLocksKey(featureKey, existingLock.ConnectionId), recordId);
 
             _logger.LogInformation(
                 "Lock force-released: feature={Feature} record={RecordId}", featureKey, recordId);
@@ -154,10 +154,10 @@ public class RedisLockStore(
         return null;
     }
 
-    public bool TryHeartbeat(string featureKey, string recordId, string connectionId, TimeSpan lockTtl)
+    public async Task<bool> TryHeartbeatAsync(string featureKey, string recordId, string connectionId, TimeSpan lockTtl)
     {
         var lockKey = GetLockKey(featureKey, recordId);
-        var existingValue = _db.StringGet(lockKey);
+        var existingValue = await _db.StringGetAsync(lockKey);
 
         if (!existingValue.HasValue) return false;
 
@@ -165,33 +165,34 @@ public class RedisLockStore(
         if (existingLock?.ConnectionId != connectionId) return false;
 
         var refreshed = existingLock with { ExpiresAtUtc = DateTime.UtcNow + lockTtl };
-        _db.StringSet(lockKey, JsonSerializer.Serialize(refreshed), lockTtl, When.Exists);
+        await _db.StringSetAsync(lockKey, JsonSerializer.Serialize(refreshed), lockTtl, When.Exists);
         return true;
     }
 
-    public LockInfo? GetLock(string featureKey, string recordId)
+    public async Task<LockInfo?> GetLockAsync(string featureKey, string recordId)
     {
-        var value = _db.StringGet(GetLockKey(featureKey, recordId));
+        var value = await _db.StringGetAsync(GetLockKey(featureKey, recordId));
         return value.HasValue
             ? JsonSerializer.Deserialize<LockInfo>(value.ToString())
             : null;
     }
 
-    public IReadOnlyList<string> GetRecordsLockedByConnection(string featureKey, string connectionId)
+    public async Task<IReadOnlyList<string>> GetRecordsLockedByConnectionAsync(string featureKey, string connectionId)
     {
-        var members = _db.SetMembers(GetConnectionLocksKey(featureKey, connectionId));
+        var members = await _db.SetMembersAsync(GetConnectionLocksKey(featureKey, connectionId));
         return members.Select(m => m.ToString()).ToList();
     }
 
-    public IReadOnlyList<LockInfo> ReleaseAllByConnection(string featureKey, string connectionId)
+    public async Task<IReadOnlyList<LockInfo>> ReleaseAllByConnectionAsync(string featureKey, string connectionId)
     {
         List<LockInfo> released = [];
         var connectionLocksKey = GetConnectionLocksKey(featureKey, connectionId);
 
-        foreach (var recordId in _db.SetMembers(connectionLocksKey))
+        var recordIds = await _db.SetMembersAsync(connectionLocksKey);
+        foreach (var recordId in recordIds)
         {
             var lockKey = GetLockKey(featureKey, recordId.ToString());
-            var existingValue = _db.StringGet(lockKey);
+            var existingValue = await _db.StringGetAsync(lockKey);
             if (existingValue.HasValue)
             {
                 var lockInfo = JsonSerializer.Deserialize<LockInfo>(existingValue.ToString());
@@ -203,29 +204,36 @@ public class RedisLockStore(
                         featureKey, recordId, connectionId);
                 }
             }
-            _db.KeyDelete(lockKey);
+            await _db.KeyDeleteAsync(lockKey);
         }
 
-        _db.KeyDelete(connectionLocksKey);
+        await _db.KeyDeleteAsync(connectionLocksKey);
         return released;
     }
 
-    public IReadOnlyList<LockInfo> GetAllLocks(string featureKey)
+    public async Task<IReadOnlyList<LockInfo>> GetAllLocksAsync(string featureKey)
     {
-        var server = _redis.GetServers().First();
-        var pattern = $"{LockKeyPrefix}:{featureKey}:*";
-        var locks = new List<LockInfo>();
-
-        foreach (var key in server.Keys(pattern: pattern))
+        // Note: server.Keys() is synchronous, so we wrap it in Task.Run to avoid blocking the thread pool
+        var locks = await Task.Run(() =>
         {
-            var value = _db.StringGet(key);
-            if (value.HasValue)
+            var server = _redis.GetServers().First();
+            var pattern = $"{LockKeyPrefix}:{featureKey}:*";
+            var result = new List<LockInfo>();
+
+            foreach (var key in server.Keys(pattern: pattern))
             {
-                var lockInfo = JsonSerializer.Deserialize<LockInfo>(value.ToString());
-                if (lockInfo != null)
-                    locks.Add(lockInfo);
+                // Use synchronous get here since we're already in Task.Run
+                var value = _db.StringGet(key);
+                if (value.HasValue)
+                {
+                    var lockInfo = JsonSerializer.Deserialize<LockInfo>(value.ToString());
+                    if (lockInfo != null)
+                        result.Add(lockInfo);
+                }
             }
-        }
+
+            return result;
+        });
 
         return locks;
     }

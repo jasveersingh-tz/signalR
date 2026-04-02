@@ -62,7 +62,7 @@ public class RecordLockHub : Hub
         var featureKey = GetFeatureKey();
         var gracePeriod = TimeSpan.FromMilliseconds(_config.GetOptionsFor(featureKey).GracePeriodMs);
 
-        var lockedRecords = _lockStore.GetRecordsLockedByConnection(featureKey, connectionId);
+        var lockedRecords = await _lockStore.GetRecordsLockedByConnectionAsync(featureKey, connectionId);
         if (lockedRecords.Count == 0)
         {
             _logger.LogInformation("Disconnected (no locks): {ConnectionId} feature={Feature}", connectionId, featureKey);
@@ -82,7 +82,7 @@ public class RecordLockHub : Hub
             try
             {
                 await Task.Delay(gracePeriod, cts.Token);
-                var released = _lockStore.ReleaseAllByConnection(featureKey, connectionId);
+                var released = await _lockStore.ReleaseAllByConnectionAsync(featureKey, connectionId);
                 if (released.Count > 0)
                     await BroadcastReleasesAsync(connectionId, featureKey, released);
             }
@@ -118,7 +118,7 @@ public class RecordLockHub : Hub
 
         var featureKey = GetFeatureKey();
         var lockTtl = TimeSpan.FromMilliseconds(_config.GetOptionsFor(featureKey).LockTtlMs);
-        var (acquired, lockInfo) = _lockStore.TryAcquire(
+        var (acquired, lockInfo) = await _lockStore.TryAcquireAsync(
             featureKey, recordId, userId, displayName, Context.ConnectionId, lockTtl);
 
         if (acquired)
@@ -144,7 +144,7 @@ public class RecordLockHub : Hub
         }
 
         var featureKey = GetFeatureKey();
-        var released = _lockStore.TryRelease(featureKey, recordId, Context.ConnectionId);
+        var released = await _lockStore.TryReleaseAsync(featureKey, recordId, Context.ConnectionId);
         if (released)
         {
             _logger.LogInformation(
@@ -161,10 +161,10 @@ public class RecordLockHub : Hub
 
         var featureKey = GetFeatureKey();
         var lockTtl = TimeSpan.FromMilliseconds(_config.GetOptionsFor(featureKey).LockTtlMs);
-        var ok = _lockStore.TryHeartbeat(featureKey, recordId, Context.ConnectionId, lockTtl);
+        var ok = await _lockStore.TryHeartbeatAsync(featureKey, recordId, Context.ConnectionId, lockTtl);
         if (ok)
         {
-            var info = _lockStore.GetLock(featureKey, recordId);
+            var info = await _lockStore.GetLockAsync(featureKey, recordId);
             await Clients.Caller.SendAsync("lockHeartbeat", recordId, info);
         }
     }
@@ -179,7 +179,7 @@ public class RecordLockHub : Hub
         }
 
         var featureKey = GetFeatureKey();
-        var removed = _lockStore.ForceRelease(featureKey, recordId);
+        var removed = await _lockStore.ForceReleaseAsync(featureKey, recordId);
         if (removed != null)
         {
             _logger.LogWarning(

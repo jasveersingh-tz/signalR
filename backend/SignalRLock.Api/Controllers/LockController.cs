@@ -17,14 +17,17 @@ public class LockController : ControllerBase
 
     /// <summary>Returns all currently active locks for a feature.</summary>
     [HttpGet]
-    public IActionResult GetAllLocks([FromQuery] string feature = "default") =>
-        Ok(_lockStore.GetAllLocks(feature));
+    public async Task<IActionResult> GetAllLocks([FromQuery] string feature = "default")
+    {
+        var locks = await _lockStore.GetAllLocksAsync(feature);
+        return Ok(locks);
+    }
 
     /// <summary>Returns the current lock for a record, or 204 if not locked.</summary>
     [HttpGet("{recordId}")]
-    public IActionResult GetLock(string recordId, [FromQuery] string feature = "default")
+    public async Task<IActionResult> GetLock(string recordId, [FromQuery] string feature = "default")
     {
-        var info = _lockStore.GetLock(feature, recordId);
+        var info = await _lockStore.GetLockAsync(feature, recordId);
         return info is null ? NoContent() : Ok(info);
     }
 }

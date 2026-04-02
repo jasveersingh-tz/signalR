@@ -32,7 +32,7 @@ export class RecordList implements OnInit, OnDestroy {
       this.allLocks = locks;
       this.cdr.markForCheck();
     });
-    await this.lockService.subscribeToAllLocks();
+    await this.lockService.subscribeToAllLocks("ARPO");
   }
 
   ngOnDestroy(): void {
