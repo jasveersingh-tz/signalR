@@ -1,123 +1,122 @@
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using StackExchange.Redis;
 using SignalRLock.Api.Models;
 
 namespace SignalRLock.Api.Services;
 
+/// <summary>
+/// Timing options for the locking system.
+/// Used as the shape for both the Default block and each per-feature block in LockFeaturesConfig.
+/// </summary>
 public class LockStoreOptions
 {
-    public int LockTtlMs { get; set; } = 300_000;       // 5 minutes
-    public int GracePeriodMs { get; set; } = 35_000;    // 35 seconds (must exceed SignalR auto-reconnect window of ~32s)
-    public int HeartbeatIntervalMs { get; set; } = 30_000; // 30 seconds
+    public int LockTtlMs { get; set; } = 300_000;          // 5 minutes
+    public int GracePeriodMs { get; set; } = 35_000;       // 35 s (must exceed SignalR auto-reconnect ~32 s)
+    public int HeartbeatIntervalMs { get; set; } = 30_000; // 30 s
 }
 
 public interface ILockStore
 {
     /// <summary>
-    /// Attempt to acquire a lock.  Returns (true, lock) if acquired or already owned by this user+connection.
+    /// Attempt to acquire a lock. Returns (true, lock) if acquired or already owned by this user.
     /// Returns (false, existingLock) if held by someone else.
+    /// <paramref name="lockTtl"/> comes from the feature handler's options.
     /// </summary>
-    (bool Acquired, LockInfo? Lock) TryAcquire(string recordId, string userId, string displayName, string connectionId);
+    (bool Acquired, LockInfo? Lock) TryAcquire(
+        string featureKey, string recordId, string userId, string displayName,
+        string connectionId, TimeSpan lockTtl);
 
     /// <summary>Release a lock owned by the given connection.</summary>
-    bool TryRelease(string recordId, string connectionId);
+    bool TryRelease(string featureKey, string recordId, string connectionId);
 
-    /// <summary>Force-release any lock on the record (admin action).</summary>
-    LockInfo? ForceRelease(string recordId);
+    /// <summary>Force-release any lock on the record regardless of owner (admin action).</summary>
+    LockInfo? ForceRelease(string featureKey, string recordId);
 
     /// <summary>Refresh the TTL for an existing lock (heartbeat).</summary>
-    bool TryHeartbeat(string recordId, string connectionId);
+    bool TryHeartbeat(string featureKey, string recordId, string connectionId, TimeSpan lockTtl);
 
     /// <summary>Get the current lock, or null if not locked / expired.</summary>
-    LockInfo? GetLock(string recordId);
+    LockInfo? GetLock(string featureKey, string recordId);
 
-    /// <summary>Return all records currently locked by a given connection.</summary>
-    IReadOnlyList<string> GetRecordsLockedByConnection(string connectionId);
+    /// <summary>Return all record IDs currently locked by a given connection under this feature.</summary>
+    IReadOnlyList<string> GetRecordsLockedByConnection(string featureKey, string connectionId);
 
-    /// <summary>Release all locks held by a connection (called on disconnect after grace period).</summary>
-    IReadOnlyList<LockInfo> ReleaseAllByConnection(string connectionId);
+    /// <summary>Release all locks held by a connection under this feature (called after grace period).</summary>
+    IReadOnlyList<LockInfo> ReleaseAllByConnection(string featureKey, string connectionId);
 
-    /// <summary>Return all currently active locks.</summary>
-    IReadOnlyList<LockInfo> GetAllLocks();
+    /// <summary>Return all currently active locks for a feature (used by REST bootstrap).</summary>
+    IReadOnlyList<LockInfo> GetAllLocks(string featureKey);
 }
 
-public class RedisLockStore : ILockStore
+public class RedisLockStore(
+    IConnectionMultiplexer redis,
+    ILogger<RedisLockStore> logger) : ILockStore
 {
-    private readonly IConnectionMultiplexer _redis;
-    private readonly IDatabase _db;
-    private readonly LockStoreOptions _options;
-    private readonly ILogger<RedisLockStore> _logger;
-    private const string LockKeyPrefix = "lock:";
-    private const string ConnectionLockKeyPrefix = "connection-locks:";
+    private readonly IConnectionMultiplexer _redis = redis;
+    private readonly IDatabase _db = redis.GetDatabase();
+    private readonly ILogger<RedisLockStore> _logger = logger;
 
-    public RedisLockStore(
-        IConnectionMultiplexer redis,
-        IOptions<LockStoreOptions> options,
-        ILogger<RedisLockStore> logger)
-    {
-        _redis = redis;
-        _db = redis.GetDatabase();
-        _options = options.Value;
-        _logger = logger;
-    }
+    // Key format:  lock:{featureKey}:{recordId}
+    // Keeping featureKey in the key namespace means locks are fully isolated per feature
+    // and you can scan/flush them independently.
+    private const string LockKeyPrefix = "lock";
+    private const string ConnectionLockKeyPrefix = "connection-locks";
 
     public (bool Acquired, LockInfo? Lock) TryAcquire(
-        string recordId, string userId, string displayName, string connectionId)
+        string featureKey, string recordId, string userId, string displayName,
+        string connectionId, TimeSpan lockTtl)
     {
-        var lockKey = GetLockKey(recordId);
-        var connectionLocksKey = GetConnectionLocksKey(connectionId);
-        var ttl = TimeSpan.FromMilliseconds(_options.LockTtlMs);
+        var lockKey = GetLockKey(featureKey, recordId);
+        var connectionLocksKey = GetConnectionLocksKey(featureKey, connectionId);
         var now = DateTime.UtcNow;
 
-        // Check if lock exists
         var existingValue = _db.StringGet(lockKey);
-        
+
         if (existingValue.HasValue)
         {
             var existingLock = JsonSerializer.Deserialize<LockInfo>(existingValue.ToString());
-            
-            // Idempotent: same owner re-acquires (rolls TTL)
+
+            // Idempotent: same owner re-acquires (rolls TTL, updates connectionId for reconnect)
             if (existingLock?.LockedByUserId == userId)
             {
-                var refreshed = existingLock with 
-                { 
-                    ExpiresAtUtc = now + ttl,
-                    ConnectionId = connectionId 
+                var refreshed = existingLock with
+                {
+                    ExpiresAtUtc = now + lockTtl,
+                    ConnectionId = connectionId
                 };
-                var json = JsonSerializer.Serialize(refreshed);
-                _db.StringSet(lockKey, json, ttl);
+                _db.StringSet(lockKey, JsonSerializer.Serialize(refreshed), lockTtl);
                 _db.SetAdd(connectionLocksKey, recordId);
-                _logger.LogInformation("Lock on record {RecordId} refreshed for user {UserId}.", recordId, userId);
+                _logger.LogInformation(
+                    "Lock refreshed: feature={Feature} record={RecordId} user={UserId}",
+                    featureKey, recordId, userId);
                 return (true, refreshed);
             }
 
-            // Held by someone else
             return (false, existingLock);
         }
 
-        // Not locked — create new lock
         var newLock = new LockInfo
         {
             RecordId = recordId,
             LockedByUserId = userId,
             LockedByDisplayName = displayName,
             AcquiredAtUtc = now,
-            ExpiresAtUtc = now + ttl,
+            ExpiresAtUtc = now + lockTtl,
             ConnectionId = connectionId
         };
 
-        var lockJson = JsonSerializer.Serialize(newLock);
-        _db.StringSet(lockKey, lockJson, ttl);
+        _db.StringSet(lockKey, JsonSerializer.Serialize(newLock), lockTtl);
         _db.SetAdd(connectionLocksKey, recordId);
-        _logger.LogInformation("Lock acquired on record {RecordId} by user {UserId}.", recordId, userId);
+        _logger.LogInformation(
+            "Lock acquired: feature={Feature} record={RecordId} user={UserId}",
+            featureKey, recordId, userId);
         return (true, newLock);
     }
 
-    public bool TryRelease(string recordId, string connectionId)
+    public bool TryRelease(string featureKey, string recordId, string connectionId)
     {
-        var lockKey = GetLockKey(recordId);
+        var lockKey = GetLockKey(featureKey, recordId);
         var existingValue = _db.StringGet(lockKey);
 
         if (existingValue.HasValue)
@@ -126,17 +125,19 @@ public class RedisLockStore : ILockStore
             if (existingLock?.ConnectionId == connectionId)
             {
                 _db.KeyDelete(lockKey);
-                _db.SetRemove(GetConnectionLocksKey(connectionId), recordId);
-                _logger.LogInformation("Lock released on record {RecordId} by connection {ConnectionId}.", recordId, connectionId);
+                _db.SetRemove(GetConnectionLocksKey(featureKey, connectionId), recordId);
+                _logger.LogInformation(
+                    "Lock released: feature={Feature} record={RecordId} conn={ConnectionId}",
+                    featureKey, recordId, connectionId);
                 return true;
             }
         }
         return false;
     }
 
-    public LockInfo? ForceRelease(string recordId)
+    public LockInfo? ForceRelease(string featureKey, string recordId)
     {
-        var lockKey = GetLockKey(recordId);
+        var lockKey = GetLockKey(featureKey, recordId);
         var existingValue = _db.StringGet(lockKey);
 
         if (existingValue.HasValue)
@@ -144,75 +145,62 @@ public class RedisLockStore : ILockStore
             var existingLock = JsonSerializer.Deserialize<LockInfo>(existingValue.ToString());
             _db.KeyDelete(lockKey);
             if (existingLock != null)
-            {
-                _db.SetRemove(GetConnectionLocksKey(existingLock.ConnectionId), recordId);
-            }
-            _logger.LogInformation("Lock force-released on record {RecordId}.", recordId);
+                _db.SetRemove(GetConnectionLocksKey(featureKey, existingLock.ConnectionId), recordId);
+
+            _logger.LogInformation(
+                "Lock force-released: feature={Feature} record={RecordId}", featureKey, recordId);
             return existingLock;
         }
         return null;
     }
 
-    public bool TryHeartbeat(string recordId, string connectionId)
+    public bool TryHeartbeat(string featureKey, string recordId, string connectionId, TimeSpan lockTtl)
     {
-        var lockKey = GetLockKey(recordId);
+        var lockKey = GetLockKey(featureKey, recordId);
         var existingValue = _db.StringGet(lockKey);
 
-        if (!existingValue.HasValue)
-            return false;
+        if (!existingValue.HasValue) return false;
 
         var existingLock = JsonSerializer.Deserialize<LockInfo>(existingValue.ToString());
-        if (existingLock?.ConnectionId != connectionId)
-            return false;
+        if (existingLock?.ConnectionId != connectionId) return false;
 
-        var ttl = TimeSpan.FromMilliseconds(_options.LockTtlMs);
-        var refreshed = existingLock with
-        {
-            ExpiresAtUtc = DateTime.UtcNow + ttl
-        };
-        var json = JsonSerializer.Serialize(refreshed);
-        _db.StringSet(lockKey, json, ttl, When.Exists);
+        var refreshed = existingLock with { ExpiresAtUtc = DateTime.UtcNow + lockTtl };
+        _db.StringSet(lockKey, JsonSerializer.Serialize(refreshed), lockTtl, When.Exists);
         return true;
     }
 
-    public LockInfo? GetLock(string recordId)
+    public LockInfo? GetLock(string featureKey, string recordId)
     {
-        var lockKey = GetLockKey(recordId);
-        var value = _db.StringGet(lockKey);
-
-        if (value.HasValue)
-        {
-            var lockInfo = JsonSerializer.Deserialize<LockInfo>(value.ToString());
-            return lockInfo;
-        }
-        return null;
+        var value = _db.StringGet(GetLockKey(featureKey, recordId));
+        return value.HasValue
+            ? JsonSerializer.Deserialize<LockInfo>(value.ToString())
+            : null;
     }
 
-    public IReadOnlyList<string> GetRecordsLockedByConnection(string connectionId)
+    public IReadOnlyList<string> GetRecordsLockedByConnection(string featureKey, string connectionId)
     {
-        var connectionLocksKey = GetConnectionLocksKey(connectionId);
-        var recordIds = _db.SetMembers(connectionLocksKey);
-        return recordIds.Select(r => r.ToString()).ToList();
+        var members = _db.SetMembers(GetConnectionLocksKey(featureKey, connectionId));
+        return members.Select(m => m.ToString()).ToList();
     }
 
-    public IReadOnlyList<LockInfo> ReleaseAllByConnection(string connectionId)
+    public IReadOnlyList<LockInfo> ReleaseAllByConnection(string featureKey, string connectionId)
     {
-        var released = new List<LockInfo>();
-        var connectionLocksKey = GetConnectionLocksKey(connectionId);
-        var recordIds = _db.SetMembers(connectionLocksKey);
+        List<LockInfo> released = [];
+        var connectionLocksKey = GetConnectionLocksKey(featureKey, connectionId);
 
-        foreach (var recordId in recordIds)
+        foreach (var recordId in _db.SetMembers(connectionLocksKey))
         {
-            var lockKey = GetLockKey(recordId.ToString());
+            var lockKey = GetLockKey(featureKey, recordId.ToString());
             var existingValue = _db.StringGet(lockKey);
-            
             if (existingValue.HasValue)
             {
                 var lockInfo = JsonSerializer.Deserialize<LockInfo>(existingValue.ToString());
                 if (lockInfo != null)
                 {
                     released.Add(lockInfo);
-                    _logger.LogInformation("Lock released on record {RecordId} due to connection {ConnectionId} disconnect.", recordId, connectionId);
+                    _logger.LogInformation(
+                        "Lock released on disconnect: feature={Feature} record={RecordId} conn={ConnectionId}",
+                        featureKey, recordId, connectionId);
                 }
             }
             _db.KeyDelete(lockKey);
@@ -222,13 +210,13 @@ public class RedisLockStore : ILockStore
         return released;
     }
 
-    public IReadOnlyList<LockInfo> GetAllLocks()
+    public IReadOnlyList<LockInfo> GetAllLocks(string featureKey)
     {
         var server = _redis.GetServers().First();
-        var keys = server.Keys(pattern: $"{LockKeyPrefix}*");
+        var pattern = $"{LockKeyPrefix}:{featureKey}:*";
         var locks = new List<LockInfo>();
 
-        foreach (var key in keys)
+        foreach (var key in server.Keys(pattern: pattern))
         {
             var value = _db.StringGet(key);
             if (value.HasValue)
@@ -242,7 +230,11 @@ public class RedisLockStore : ILockStore
         return locks;
     }
 
-    private string GetLockKey(string recordId) => $"{LockKeyPrefix}{recordId}";
+    // ── Key helpers ───────────────────────────────────────────────────────────
 
-    private string GetConnectionLocksKey(string connectionId) => $"{ConnectionLockKeyPrefix}{connectionId}";
+    private static string GetLockKey(string featureKey, string recordId) =>
+        $"{LockKeyPrefix}:{featureKey}:{recordId}";
+
+    private static string GetConnectionLocksKey(string featureKey, string connectionId) =>
+        $"{ConnectionLockKeyPrefix}:{featureKey}:{connectionId}";
 }

@@ -8,37 +8,106 @@ using SignalRLock.Api.Services;
 namespace SignalRLock.Api.Hubs;
 
 /// <summary>
-/// SignalR hub for record-level locking.
-/// Endpoint: /hubs/recordLock
+/// Single SignalR hub that serves all features.
+/// The client passes its feature identity once as a query-string parameter on connect:
+///   /hubs/locks?feature=purchase-orders
+///
+/// The featureKey is stored in Context.Items for the lifetime of the connection and used to:
+///   - namespace Redis keys (via ILockStore)
+///   - scope SignalR broadcast groups so each feature only receives its own lock events
+///   - resolve per-feature timings from LockFeaturesConfig
 /// </summary>
 public class RecordLockHub : Hub
 {
-    // Grace period: connectionId → cancellation token source + locked records
     private static readonly ConcurrentDictionary<string, GraceEntry> _graceTimers =
         new(StringComparer.Ordinal);
 
     private readonly ILockStore _lockStore;
-    private readonly LockStoreOptions _options;
+    private readonly LockFeaturesConfig _config;
     private readonly ILogger<RecordLockHub> _logger;
 
-    public RecordLockHub(ILockStore lockStore, IOptions<LockStoreOptions> options, ILogger<RecordLockHub> logger)
+    public RecordLockHub(
+        ILockStore lockStore,
+        IOptions<LockFeaturesConfig> config,
+        ILogger<RecordLockHub> logger)
     {
         _lockStore = lockStore;
-        _options = options.Value;
+        _config = config.Value;
         _logger = logger;
     }
 
-    private const string AllLocksGroup = "all-locks";
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
 
-    // ─── Client → Server ──────────────────────────────────────────────────────
-
-    /// <summary>Subscribe to lock changes for all records (used by the list view).</summary>
-    public async Task SubscribeToAllLocks()
+    public override Task OnConnectedAsync()
     {
-        await Groups.AddToGroupAsync(Context.ConnectionId, AllLocksGroup);
+        var featureKey = Context.GetHttpContext()?.Request.Query["feature"].ToString();
+        if (string.IsNullOrWhiteSpace(featureKey))
+            featureKey = DefaultFeatureKey;
+
+        Context.Items[FeatureKeyItem] = featureKey;
+
+        if (_graceTimers.TryRemove(Context.ConnectionId, out var entry))
+        {
+            entry.Cts.Cancel();
+            entry.Cts.Dispose();
+        }
+
+        _logger.LogInformation("Connected: {ConnectionId} feature={Feature}", Context.ConnectionId, featureKey);
+        return base.OnConnectedAsync();
     }
 
-    /// <summary>Acquire a lock on a record.  Broadcasts lockAcquired or sends lockRejected.</summary>
+    public override async Task OnDisconnectedAsync(Exception? exception)
+    {
+        var connectionId = Context.ConnectionId;
+        var featureKey = GetFeatureKey();
+        var gracePeriod = TimeSpan.FromMilliseconds(_config.GetOptionsFor(featureKey).GracePeriodMs);
+
+        var lockedRecords = _lockStore.GetRecordsLockedByConnection(featureKey, connectionId);
+        if (lockedRecords.Count == 0)
+        {
+            _logger.LogInformation("Disconnected (no locks): {ConnectionId} feature={Feature}", connectionId, featureKey);
+            await base.OnDisconnectedAsync(exception);
+            return;
+        }
+
+        _logger.LogInformation(
+            "Disconnected: {ConnectionId} feature={Feature}; grace period {Grace}ms for [{Records}].",
+            connectionId, featureKey, gracePeriod.TotalMilliseconds, string.Join(", ", lockedRecords));
+
+        var cts = new CancellationTokenSource();
+        _graceTimers[connectionId] = new GraceEntry(cts, lockedRecords, featureKey);
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(gracePeriod, cts.Token);
+                var released = _lockStore.ReleaseAllByConnection(featureKey, connectionId);
+                if (released.Count > 0)
+                    await BroadcastReleasesAsync(connectionId, featureKey, released);
+            }
+            catch (TaskCanceledException)
+            {
+                _logger.LogInformation("Grace period cancelled for {ConnectionId} (reconnected).", connectionId);
+            }
+            finally
+            {
+                _graceTimers.TryRemove(connectionId, out _);
+            }
+        }, CancellationToken.None);
+
+        await base.OnDisconnectedAsync(exception);
+    }
+
+    // ── Client → Server ───────────────────────────────────────────────────────
+
+    /// <summary>Subscribe to lock change events for all records in this feature.</summary>
+    public async Task SubscribeToAllLocks()
+    {
+        await Groups.AddToGroupAsync(Context.ConnectionId, GetAllLocksGroup(GetFeatureKey()));
+    }
+
+    /// <summary>Acquire a lock on a record. Broadcasts lockAcquired or sends lockRejected.</summary>
     public async Task AcquireLock(string recordId, string userId, string displayName)
     {
         if (string.IsNullOrWhiteSpace(recordId) || string.IsNullOrWhiteSpace(userId))
@@ -47,12 +116,17 @@ public class RecordLockHub : Hub
             return;
         }
 
-        var (acquired, lockInfo) = _lockStore.TryAcquire(recordId, userId, displayName, Context.ConnectionId);
+        var featureKey = GetFeatureKey();
+        var lockTtl = TimeSpan.FromMilliseconds(_config.GetOptionsFor(featureKey).LockTtlMs);
+        var (acquired, lockInfo) = _lockStore.TryAcquire(
+            featureKey, recordId, userId, displayName, Context.ConnectionId, lockTtl);
 
         if (acquired)
         {
-            _logger.LogInformation("AcquireLock: record={RecordId} user={UserId} conn={Conn}", recordId, userId, Context.ConnectionId);
-            await Clients.Group(AllLocksGroup).SendAsync("lockAcquired", recordId, lockInfo);
+            _logger.LogInformation(
+                "AcquireLock: feature={Feature} record={RecordId} user={UserId} conn={Conn}",
+                featureKey, recordId, userId, Context.ConnectionId);
+            await Clients.Group(GetAllLocksGroup(featureKey)).SendAsync("lockAcquired", recordId, lockInfo);
         }
         else
         {
@@ -69,24 +143,28 @@ public class RecordLockHub : Hub
             return;
         }
 
-        var released = _lockStore.TryRelease(recordId, Context.ConnectionId);
+        var featureKey = GetFeatureKey();
+        var released = _lockStore.TryRelease(featureKey, recordId, Context.ConnectionId);
         if (released)
         {
-            _logger.LogInformation("ReleaseLock: record={RecordId} conn={Conn}", recordId, Context.ConnectionId);
-            await Clients.Group(AllLocksGroup).SendAsync("lockReleased", recordId);
+            _logger.LogInformation(
+                "ReleaseLock: feature={Feature} record={RecordId} conn={Conn}",
+                featureKey, recordId, Context.ConnectionId);
+            await Clients.Group(GetAllLocksGroup(featureKey)).SendAsync("lockReleased", recordId);
         }
     }
 
-    /// <summary>Heartbeat to roll the TTL forward.</summary>
+    /// <summary>Heartbeat — rolls the TTL forward for an owned lock.</summary>
     public async Task Heartbeat(string recordId)
     {
-        if (string.IsNullOrWhiteSpace(recordId))
-            return;
+        if (string.IsNullOrWhiteSpace(recordId)) return;
 
-        var ok = _lockStore.TryHeartbeat(recordId, Context.ConnectionId);
+        var featureKey = GetFeatureKey();
+        var lockTtl = TimeSpan.FromMilliseconds(_config.GetOptionsFor(featureKey).LockTtlMs);
+        var ok = _lockStore.TryHeartbeat(featureKey, recordId, Context.ConnectionId, lockTtl);
         if (ok)
         {
-            var info = _lockStore.GetLock(recordId);
+            var info = _lockStore.GetLock(featureKey, recordId);
             await Clients.Caller.SendAsync("lockHeartbeat", recordId, info);
         }
     }
@@ -94,104 +172,54 @@ public class RecordLockHub : Hub
     /// <summary>Admin: force-release any lock on a record.</summary>
     public async Task ForceRelease(string recordId)
     {
-        // POC: accept any caller; production should verify admin role.
         if (string.IsNullOrWhiteSpace(recordId))
         {
             await Clients.Caller.SendAsync("error", "recordId is required.");
             return;
         }
 
-        var removed = _lockStore.ForceRelease(recordId);
+        var featureKey = GetFeatureKey();
+        var removed = _lockStore.ForceRelease(featureKey, recordId);
         if (removed != null)
         {
-            _logger.LogWarning("ForceRelease: record={RecordId} by admin conn={Conn}", recordId, Context.ConnectionId);
-            await Clients.Group(AllLocksGroup).SendAsync("lockReleased", recordId);
+            _logger.LogWarning(
+                "ForceRelease: feature={Feature} record={RecordId} by conn={Conn}",
+                featureKey, recordId, Context.ConnectionId);
+            await Clients.Group(GetAllLocksGroup(featureKey)).SendAsync("lockReleased", recordId);
         }
     }
 
-    // ─── Lifecycle ────────────────────────────────────────────────────────────
+    // ── Helpers ───────────────────────────────────────────────────────────────
 
-    public override Task OnConnectedAsync()
-    {
-        // Cancel any pending grace timer for this connection (reconnect scenario)
-        if (_graceTimers.TryRemove(Context.ConnectionId, out var entry))
-        {
-            entry.Cts.Cancel();
-            entry.Cts.Dispose();
-        }
-        _logger.LogInformation("Connected: {ConnectionId}", Context.ConnectionId);
-        return base.OnConnectedAsync();
-    }
-
-    public override async Task OnDisconnectedAsync(Exception? exception)
-    {
-        var connectionId = Context.ConnectionId;
-        var gracePeriod = TimeSpan.FromMilliseconds(_options.GracePeriodMs);
-
-        var lockedRecords = _lockStore.GetRecordsLockedByConnection(connectionId);
-        if (lockedRecords.Count == 0)
-        {
-            _logger.LogInformation("Disconnected (no locks): {ConnectionId}", connectionId);
-            await base.OnDisconnectedAsync(exception);
-            return;
-        }
-
-        _logger.LogInformation("Disconnected: {ConnectionId}; starting grace period of {Grace}ms for records [{Records}].",
-            connectionId, _options.GracePeriodMs, string.Join(", ", lockedRecords));
-
-        var cts = new CancellationTokenSource();
-        var entry = new GraceEntry(cts, lockedRecords);
-        _graceTimers[connectionId] = entry;
-
-        // Fire-and-forget grace timer using the hub context factory via DI.
-        // We capture the IHubContext through a scoped closure to broadcast after grace.
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await Task.Delay(gracePeriod, cts.Token);
-
-                // Grace period elapsed without reconnect → release all locks
-                var released = _lockStore.ReleaseAllByConnection(connectionId);
-
-                // We need an IHubContext to send messages outside the hub instance.
-                // It's injected via the lambda closure captured from the DI container below.
-                if (released.Count > 0)
-                {
-                    await BroadcastReleasesAsync(connectionId, released);
-                }
-            }
-            catch (TaskCanceledException)
-            {
-                _logger.LogInformation("Grace period cancelled for {ConnectionId} (reconnected).", connectionId);
-            }
-            finally
-            {
-                _graceTimers.TryRemove(connectionId, out _);
-            }
-        }, CancellationToken.None);
-
-        await base.OnDisconnectedAsync(exception);
-    }
-
-    // Populated by the hub infrastructure via IHubContext injection below
     internal static IHubContext<RecordLockHub>? HubContext { get; set; }
 
-    private async Task BroadcastReleasesAsync(string connectionId, IReadOnlyList<LockInfo> released)
+    private const string FeatureKeyItem = "featureKey";
+    private const string DefaultFeatureKey = "default";
+
+    private string GetFeatureKey() =>
+        Context.Items.TryGetValue(FeatureKeyItem, out var v) && v is string s ? s : DefaultFeatureKey;
+
+    private static string GetAllLocksGroup(string featureKey) => $"all-locks:{featureKey}";
+
+    private async Task BroadcastReleasesAsync(
+        string connectionId, string featureKey, IReadOnlyList<LockInfo> released)
     {
         var ctx = HubContext;
         if (ctx == null)
         {
-            _logger.LogWarning("HubContext not available; cannot broadcast releases for {ConnectionId}.", connectionId);
+            _logger.LogWarning("HubContext unavailable; cannot broadcast releases for {ConnectionId}.", connectionId);
             return;
         }
 
+        var group = GetAllLocksGroup(featureKey);
         foreach (var lockInfo in released)
         {
-            _logger.LogInformation("Broadcasting lockReleased for record {RecordId} after grace expiry.", lockInfo.RecordId);
-            await ctx.Clients.Group(AllLocksGroup).SendAsync("lockReleased", lockInfo.RecordId);
+            _logger.LogInformation(
+                "Broadcasting lockReleased after grace expiry: feature={Feature} record={RecordId}",
+                featureKey, lockInfo.RecordId);
+            await ctx.Clients.Group(group).SendAsync("lockReleased", lockInfo.RecordId);
         }
     }
 
-    private record GraceEntry(CancellationTokenSource Cts, IReadOnlyList<string> LockedRecords);
+    private record GraceEntry(CancellationTokenSource Cts, IReadOnlyList<string> LockedRecords, string FeatureKey);
 }

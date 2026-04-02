@@ -5,37 +5,37 @@ using SignalRLock.Api.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// ── Configuration ────────────────────────────────────────────────────────────
-builder.Services.Configure<LockStoreOptions>(builder.Configuration.GetSection("LockStore"));
+// ── Per-feature lock configuration ───────────────────────────────────────────
+// LockFeatures:Default        → fallback timings for any unregistered feature
+// LockFeatures:Features:{key} → timings for a specific feature (e.g. "purchase-orders")
+builder.Services.Configure<LockFeaturesConfig>(
+    builder.Configuration.GetSection("LockFeatures"));
 
-// ── Redis Connection ─────────────────────────────────────────────────────────
+// ── Redis connection ──────────────────────────────────────────────────────────
 var redisConnection = builder.Configuration.GetValue<string>("Redis:Connection") ?? "localhost:6379";
 var redis = ConnectionMultiplexer.Connect(redisConnection);
 builder.Services.AddSingleton<IConnectionMultiplexer>(redis);
 
-// ── Services ─────────────────────────────────────────────────────────────────
+// ── Services ──────────────────────────────────────────────────────────────────
 builder.Services.AddSingleton<ILockStore, RedisLockStore>();
 builder.Services.AddControllers();
 builder.Services.AddSignalR();
 
-// ── CORS — allow the Angular dev server ──────────────────────────────────────
+// ── CORS ──────────────────────────────────────────────────────────────────────
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AngularDev", policy =>
     {
         policy
-            .WithOrigins(
-                "http://localhost:4100",
-                "https://localhost:4100")
+            .WithOrigins("http://localhost:4100", "https://localhost:4100")
             .AllowAnyHeader()
             .AllowAnyMethod()
-            .AllowCredentials(); // Required for SignalR WebSockets with credentials
+            .AllowCredentials();
     });
 });
 
 var app = builder.Build();
 
-// Inject IHubContext into the static property used by grace-period broadcasts
 var hubContext = app.Services.GetRequiredService<IHubContext<RecordLockHub>>();
 RecordLockHub.HubContext = hubContext;
 
@@ -43,9 +43,8 @@ RecordLockHub.HubContext = hubContext;
 app.UseCors("AngularDev");
 app.UseRouting();
 app.MapControllers();
-app.MapHub<RecordLockHub>("/hubs/recordLock");
+app.MapHub<RecordLockHub>("/hubs/locks");
 
 app.Run();
 
-// Required for integration tests
 public partial class Program { }
