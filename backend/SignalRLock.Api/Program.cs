@@ -13,8 +13,17 @@ builder.Services.Configure<LockFeaturesConfig>(
 
 // ── Redis connection ──────────────────────────────────────────────────────────
 var redisConnection = builder.Configuration.GetValue<string>("Redis:Connection") ?? "localhost:6379";
-var redis = ConnectionMultiplexer.Connect(redisConnection);
-builder.Services.AddSingleton<IConnectionMultiplexer>(redis);
+try
+{
+    var redis = ConnectionMultiplexer.Connect(redisConnection);
+    builder.Services.AddSingleton<IConnectionMultiplexer>(redis);
+}
+catch (Exception ex)
+{
+    // Fail fast with a meaningful message — Redis is a hard dependency
+    Console.Error.WriteLine($"[FATAL] Could not connect to Redis at '{redisConnection}': {ex.Message}");
+    return;
+}
 
 // ── Services ──────────────────────────────────────────────────────────────────
 builder.Services.AddSingleton<ILockStore, RedisLockStore>();
