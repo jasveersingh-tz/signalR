@@ -207,6 +207,89 @@ public class RecordLockHub : Hub
         }
     }
 
+    
+    public async Task RequestAccess(string recordId, string userId, string displayName)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(recordId) || string.IsNullOrWhiteSpace(userId))
+            {
+                await Clients.Caller.SendAsync("error", "recordId and userId are required.");
+                return;
+            }
+
+            var featureKey = GetFeatureKey();
+            var currentLock = await _lockStore.GetLockAsync(featureKey, recordId);
+            if (currentLock == null)
+            {
+                // Race: lock was released between the UI showing and the button being clicked
+                await Clients.Caller.SendAsync("error", "Record is no longer locked. Refresh and try editing directly.");
+                return;
+            }
+
+            _logger.LogInformation("RequestAccess: record={RecordId} requester={UserId} → holder conn={HolderConn}",
+                recordId, userId, currentLock.ConnectionId);
+
+            await Clients.Client(currentLock.ConnectionId).SendAsync("lockRequested", new
+            {
+                recordId,
+                requesterId = userId,
+                requesterDisplayName = displayName,
+                requesterConnectionId = Context.ConnectionId
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "RequestAccess failed for record {RecordId}", recordId);
+            await Clients.Caller.SendAsync("error", "Failed to send access request. Please try again.");
+        }
+    }
+
+    /// <summary>
+    /// Accept a pending access request: release the caller's lock and grant it to the requester.
+    /// Broadcasts lockAcquired on success.
+    /// </summary>
+    public async Task AcceptAccessRequest(
+        string recordId, string requesterUserId, string requesterDisplayName, string requesterConnectionId)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(recordId))
+            {
+                await Clients.Caller.SendAsync("error", "recordId is required.");
+                return;
+            }
+
+            var featureKey = GetFeatureKey();
+            var currentLock = await _lockStore.GetLockAsync(featureKey, recordId);
+            if (currentLock == null || currentLock.ConnectionId != Context.ConnectionId)
+            {
+                await Clients.Caller.SendAsync("error", "You do not hold the lock on this record.");
+                return;
+            }
+
+            await _lockStore.TryReleaseAsync(featureKey, recordId, Context.ConnectionId);
+            var lockTtl = TimeSpan.FromMilliseconds(_config.GetOptionsFor(featureKey).LockTtlMs);
+            var (acquired, newLock) = await _lockStore.TryAcquireAsync(
+                featureKey, recordId, requesterUserId, requesterDisplayName, requesterConnectionId, lockTtl);
+
+            if (acquired)
+            {
+                _logger.LogInformation("AcceptAccessRequest: record={RecordId} transferred to user={UserId}", recordId, requesterUserId);
+                await Clients.Group(GetAllLocksGroup(featureKey)).SendAsync("lockAcquired", recordId, newLock);
+            }
+            else
+            {
+                _logger.LogWarning("AcceptAccessRequest: lock transfer race on record={RecordId}", recordId);
+                await Clients.Caller.SendAsync("error", "Lock transfer failed — record may have been acquired by another user.");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "AcceptAccessRequest failed for record {RecordId}", recordId);
+            await Clients.Caller.SendAsync("error", "Failed to accept access request. Please try again.");
+        }
+    }
     /// <summary>Admin: force-release any lock on a record.</summary>
     public async Task ForceRelease(string recordId)
     {
