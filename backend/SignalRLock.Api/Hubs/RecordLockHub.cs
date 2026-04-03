@@ -90,6 +90,12 @@ public class RecordLockHub : Hub
             {
                 _logger.LogInformation("Grace period cancelled for {ConnectionId} (reconnected).", connectionId);
             }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "Grace-period cleanup failed for {ConnectionId}; locks may remain until TTL expiry.",
+                    connectionId);
+            }
             finally
             {
                 _graceTimers.TryRemove(connectionId, out _);
@@ -104,88 +110,211 @@ public class RecordLockHub : Hub
     /// <summary>Subscribe to lock change events for all records in this feature.</summary>
     public async Task SubscribeToAllLocks()
     {
-        await Groups.AddToGroupAsync(Context.ConnectionId, GetAllLocksGroup(GetFeatureKey()));
+        try
+        {
+            await Groups.AddToGroupAsync(Context.ConnectionId, GetAllLocksGroup(GetFeatureKey()));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "SubscribeToAllLocks failed for connection {ConnectionId}", Context.ConnectionId);
+            await Clients.Caller.SendAsync("error", "Failed to subscribe to lock events. Please try again.");
+        }
     }
 
     /// <summary>Acquire a lock on a record. Broadcasts lockAcquired or sends lockRejected.</summary>
     public async Task AcquireLock(string recordId, string userId, string displayName)
     {
-        if (string.IsNullOrWhiteSpace(recordId) || string.IsNullOrWhiteSpace(userId))
+        try
         {
-            await Clients.Caller.SendAsync("error", "recordId and userId are required.");
-            return;
-        }
+            if (string.IsNullOrWhiteSpace(recordId) || string.IsNullOrWhiteSpace(userId))
+            {
+                await Clients.Caller.SendAsync("error", "recordId and userId are required.");
+                return;
+            }
 
-        var featureKey = GetFeatureKey();
-        var lockTtl = TimeSpan.FromMilliseconds(_config.GetOptionsFor(featureKey).LockTtlMs);
-        var (acquired, lockInfo) = await _lockStore.TryAcquireAsync(
-            featureKey, recordId, userId, displayName, Context.ConnectionId, lockTtl);
+            var featureKey = GetFeatureKey();
+            var lockTtl = TimeSpan.FromMilliseconds(_config.GetOptionsFor(featureKey).LockTtlMs);
+            var (acquired, lockInfo) = await _lockStore.TryAcquireAsync(
+                featureKey, recordId, userId, displayName, Context.ConnectionId, lockTtl);
 
-        if (acquired)
-        {
-            _logger.LogInformation(
-                "AcquireLock: feature={Feature} record={RecordId} user={UserId} conn={Conn}",
-                featureKey, recordId, userId, Context.ConnectionId);
-            await Clients.Group(GetAllLocksGroup(featureKey)).SendAsync("lockAcquired", recordId, lockInfo);
+            if (acquired)
+            {
+                _logger.LogInformation(
+                    "AcquireLock: feature={Feature} record={RecordId} user={UserId} conn={Conn}",
+                    featureKey, recordId, userId, Context.ConnectionId);
+                await Clients.Group(GetAllLocksGroup(featureKey)).SendAsync("lockAcquired", recordId, lockInfo);
+            }
+            else
+            {
+                await Clients.Caller.SendAsync("lockRejected", recordId, lockInfo);
+            }
         }
-        else
+        catch (Exception ex)
         {
-            await Clients.Caller.SendAsync("lockRejected", recordId, lockInfo);
+            _logger.LogError(ex, "AcquireLock failed for record {RecordId}", recordId);
+            await Clients.Caller.SendAsync("error", "Failed to acquire lock. Please try again.");
         }
     }
 
     /// <summary>Release the caller's lock on a record.</summary>
     public async Task ReleaseLock(string recordId)
     {
-        if (string.IsNullOrWhiteSpace(recordId))
+        try
         {
-            await Clients.Caller.SendAsync("error", "recordId is required.");
-            return;
-        }
+            if (string.IsNullOrWhiteSpace(recordId))
+            {
+                await Clients.Caller.SendAsync("error", "recordId is required.");
+                return;
+            }
 
-        var featureKey = GetFeatureKey();
-        var released = await _lockStore.TryReleaseAsync(featureKey, recordId, Context.ConnectionId);
-        if (released)
+            var featureKey = GetFeatureKey();
+            var released = await _lockStore.TryReleaseAsync(featureKey, recordId, Context.ConnectionId);
+            if (released)
+            {
+                _logger.LogInformation(
+                    "ReleaseLock: feature={Feature} record={RecordId} conn={Conn}",
+                    featureKey, recordId, Context.ConnectionId);
+                await Clients.Group(GetAllLocksGroup(featureKey)).SendAsync("lockReleased", recordId);
+            }
+        }
+        catch (Exception ex)
         {
-            _logger.LogInformation(
-                "ReleaseLock: feature={Feature} record={RecordId} conn={Conn}",
-                featureKey, recordId, Context.ConnectionId);
-            await Clients.Group(GetAllLocksGroup(featureKey)).SendAsync("lockReleased", recordId);
+            _logger.LogError(ex, "ReleaseLock failed for record {RecordId}", recordId);
+            await Clients.Caller.SendAsync("error", "Failed to release lock. Please try again.");
         }
     }
 
     /// <summary>Heartbeat — rolls the TTL forward for an owned lock.</summary>
     public async Task Heartbeat(string recordId)
     {
-        if (string.IsNullOrWhiteSpace(recordId)) return;
-
-        var featureKey = GetFeatureKey();
-        var lockTtl = TimeSpan.FromMilliseconds(_config.GetOptionsFor(featureKey).LockTtlMs);
-        var ok = await _lockStore.TryHeartbeatAsync(featureKey, recordId, Context.ConnectionId, lockTtl);
-        if (ok)
+        try
         {
-            var info = await _lockStore.GetLockAsync(featureKey, recordId);
-            await Clients.Caller.SendAsync("lockHeartbeat", recordId, info);
+            if (string.IsNullOrWhiteSpace(recordId)) return;
+
+            var featureKey = GetFeatureKey();
+            var lockTtl = TimeSpan.FromMilliseconds(_config.GetOptionsFor(featureKey).LockTtlMs);
+            var ok = await _lockStore.TryHeartbeatAsync(featureKey, recordId, Context.ConnectionId, lockTtl);
+            if (ok)
+            {
+                var info = await _lockStore.GetLockAsync(featureKey, recordId);
+                await Clients.Caller.SendAsync("lockHeartbeat", recordId, info);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Heartbeat failed for record {RecordId}", recordId);
+            await Clients.Caller.SendAsync("error", "Failed to send heartbeat. Please try again.");
         }
     }
 
+    
+    public async Task RequestAccess(string recordId, string userId, string displayName)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(recordId) || string.IsNullOrWhiteSpace(userId))
+            {
+                await Clients.Caller.SendAsync("error", "recordId and userId are required.");
+                return;
+            }
+
+            var featureKey = GetFeatureKey();
+            var currentLock = await _lockStore.GetLockAsync(featureKey, recordId);
+            if (currentLock == null)
+            {
+                // Race: lock was released between the UI showing and the button being clicked
+                await Clients.Caller.SendAsync("error", "Record is no longer locked. Refresh and try editing directly.");
+                return;
+            }
+
+            _logger.LogInformation("RequestAccess: record={RecordId} requester={UserId} → holder conn={HolderConn}",
+                recordId, userId, currentLock.ConnectionId);
+
+            await Clients.Client(currentLock.ConnectionId).SendAsync("lockRequested", new
+            {
+                recordId,
+                requesterId = userId,
+                requesterDisplayName = displayName,
+                requesterConnectionId = Context.ConnectionId
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "RequestAccess failed for record {RecordId}", recordId);
+            await Clients.Caller.SendAsync("error", "Failed to send access request. Please try again.");
+        }
+    }
+
+    /// <summary>
+    /// Accept a pending access request: release the caller's lock and grant it to the requester.
+    /// Broadcasts lockAcquired on success.
+    /// </summary>
+    public async Task AcceptAccessRequest(
+        string recordId, string requesterUserId, string requesterDisplayName, string requesterConnectionId)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(recordId))
+            {
+                await Clients.Caller.SendAsync("error", "recordId is required.");
+                return;
+            }
+
+            var featureKey = GetFeatureKey();
+            var currentLock = await _lockStore.GetLockAsync(featureKey, recordId);
+            if (currentLock == null || currentLock.ConnectionId != Context.ConnectionId)
+            {
+                await Clients.Caller.SendAsync("error", "You do not hold the lock on this record.");
+                return;
+            }
+
+            await _lockStore.TryReleaseAsync(featureKey, recordId, Context.ConnectionId);
+            var lockTtl = TimeSpan.FromMilliseconds(_config.GetOptionsFor(featureKey).LockTtlMs);
+            var (acquired, newLock) = await _lockStore.TryAcquireAsync(
+                featureKey, recordId, requesterUserId, requesterDisplayName, requesterConnectionId, lockTtl);
+
+            if (acquired)
+            {
+                _logger.LogInformation("AcceptAccessRequest: record={RecordId} transferred to user={UserId}", recordId, requesterUserId);
+                await Clients.Group(GetAllLocksGroup(featureKey)).SendAsync("lockAcquired", recordId, newLock);
+            }
+            else
+            {
+                _logger.LogWarning("AcceptAccessRequest: lock transfer race on record={RecordId}", recordId);
+                await Clients.Caller.SendAsync("error", "Lock transfer failed — record may have been acquired by another user.");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "AcceptAccessRequest failed for record {RecordId}", recordId);
+            await Clients.Caller.SendAsync("error", "Failed to accept access request. Please try again.");
+        }
+    }
     /// <summary>Admin: force-release any lock on a record.</summary>
     public async Task ForceRelease(string recordId)
     {
-        if (string.IsNullOrWhiteSpace(recordId))
+        try
         {
-            await Clients.Caller.SendAsync("error", "recordId is required.");
-            return;
-        }
+            if (string.IsNullOrWhiteSpace(recordId))
+            {
+                await Clients.Caller.SendAsync("error", "recordId is required.");
+                return;
+            }
 
-        var featureKey = GetFeatureKey();
-        var removed = await _lockStore.ForceReleaseAsync(featureKey, recordId);
-        if (removed != null)
+            var featureKey = GetFeatureKey();
+            var removed = await _lockStore.ForceReleaseAsync(featureKey, recordId);
+            if (removed != null)
+            {
+                _logger.LogWarning(
+                    "ForceRelease: feature={Feature} record={RecordId} by conn={Conn}",
+                    featureKey, recordId, Context.ConnectionId);
+                await Clients.Group(GetAllLocksGroup(featureKey)).SendAsync("lockReleased", recordId);
+            }
+        }
+        catch (Exception ex)
         {
-            _logger.LogWarning(
-                "ForceRelease: feature={Feature} record={RecordId} by conn={Conn}",
-                featureKey, recordId, Context.ConnectionId);
-            await Clients.Group(GetAllLocksGroup(featureKey)).SendAsync("lockReleased", recordId);
+            _logger.LogError(ex, "ForceRelease failed for record {RecordId}", recordId);
+            await Clients.Caller.SendAsync("error", "Failed to force release lock. Please try again.");
         }
     }
 

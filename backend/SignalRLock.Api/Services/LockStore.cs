@@ -86,6 +86,10 @@ public class RedisLockStore(
                     ConnectionId = connectionId
                 };
                 await _db.StringSetAsync(lockKey, JsonSerializer.Serialize(refreshed), lockTtl);
+                // If the connection changed (e.g. duplicate tab), clean up the old connection's
+                // tracking set to prevent its disconnect handler from evicting this lock.
+                if (existingLock.ConnectionId != connectionId)
+                    await _db.SetRemoveAsync(GetConnectionLocksKey(featureKey, existingLock.ConnectionId), recordId);
                 await _db.SetAddAsync(connectionLocksKey, recordId);
                 _logger.LogInformation(
                     "Lock refreshed: feature={Feature} record={RecordId} user={UserId}",
@@ -196,15 +200,23 @@ public class RedisLockStore(
             if (existingValue.HasValue)
             {
                 var lockInfo = JsonSerializer.Deserialize<LockInfo>(existingValue.ToString());
-                if (lockInfo != null)
+                // Only release if this connection still owns the lock — a re-acquire by the same
+                // user from a new connection may have already transferred ownership.
+                if (lockInfo != null && lockInfo.ConnectionId == connectionId)
                 {
                     released.Add(lockInfo);
+                    await _db.KeyDeleteAsync(lockKey);
                     _logger.LogInformation(
                         "Lock released on disconnect: feature={Feature} record={RecordId} conn={ConnectionId}",
                         featureKey, recordId, connectionId);
                 }
+                else if (lockInfo != null)
+                {
+                    _logger.LogInformation(
+                        "Skipping disconnect release: feature={Feature} record={RecordId} lock now owned by conn={OwnerConn}",
+                        featureKey, recordId, lockInfo.ConnectionId);
+                }
             }
-            await _db.KeyDeleteAsync(lockKey);
         }
 
         await _db.KeyDeleteAsync(connectionLocksKey);

@@ -17,3 +17,6 @@ frontend/**/node_modules/
 
 # Test results
 TestResults/
+
+# Skills
+.github
