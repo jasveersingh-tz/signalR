@@ -86,7 +86,6 @@ graph TB
 | Module | Path | Purpose |
 |---|---|---|
 | Root README | `README.md` | Repository quick start and high-level architecture summary |
-| Reusability discussion | `docs/REUSABILITY_DESIGN_DISCUSSION.md` | Architecture tradeoff analysis for multi-feature reuse |
 | User stories | `docs/USER_STORIES.md` | Product/user requirement capture |
 
 ## External Dependencies
